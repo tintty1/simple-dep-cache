@@ -2,9 +2,21 @@
 name = "simple-dep-cache"
 # version = "0.1.0"
 dynamic = ["version"]
-description = "Add your description here"
+description = "Redis-based caching library with intelligent dependency tracking for Python applications"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["cache", "redis", "dependency", "cache invalidation"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Caching",
+]
 dependencies = [
     "redis",
 ]
@@ -29,10 +41,6 @@ dev = [
 
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
-
-[tool.hatch.build.targets.sdist]
-exclude = ["src/tests"]
-include = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
