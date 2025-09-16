@@ -1,0 +1,45 @@
+[project]
+name = "simple-dep-cache"
+# version = "0.1.0"
+dynamic = ["version"]
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "redis",
+]
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[project.optional-dependencies]
+fast-json = [
+   "orjson",
+]
+
+[dependency-groups]
+dev = [
+    "ipython",
+    "pytest",
+    "pytest-asyncio",
+    "fakeredis",
+    "ruff",
+]
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["src/tests"]
+include = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = [
+    "tests",
+]
+python_files = [
+    "test_*.py",
+]
+
