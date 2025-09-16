@@ -17,19 +17,28 @@ logger = logging.getLogger(__name__)
 class CacheManager:
     """Synchronous Redis-based cache manager with dependency tracking."""
 
-    def __init__(
-        self, redis_client: redis.Redis | None = None, prefix: str = "cache"
-    ):
+    def __init__(self, redis_client: redis.Redis | None = None, prefix: str = "cache"):
         if redis_client is None:
-            logger.info(
-                "Creating Redis client from environment configuration. "
-                "Provide a custom redis_client parameter to override."
-            )
-            self.redis = create_redis_client_from_config()
+            from .config import config
+
+            self._redis = None
+            if config.cache_enabled:
+                logger.info(
+                    "Creating Redis client from environment configuration. "
+                    "Provide a custom redis_client parameter to override."
+                )
+                self._redis = create_redis_client_from_config()
         else:
-            self.redis = redis_client
+            self._redis = redis_client
         self.prefix = prefix
         self.events = EventEmitter()
+
+    @property
+    def redis(self) -> redis.Redis:
+        """Get the Redis client, raising an error if not configured."""
+        if self._redis is None:
+            raise RuntimeError("Cache is disabled or redis client is not configured.")
+        return self._redis
 
     def _cache_key(self, key: str) -> str:
         """Generate prefixed cache key."""
@@ -87,9 +96,7 @@ class CacheManager:
         if value is None:
             # Emit cache miss event
             self.events.emit(
-                CacheEvent(
-                    event_type=CacheEventType.MISS, key=key, timestamp=time.time()
-                )
+                CacheEvent(event_type=CacheEventType.MISS, key=key, timestamp=time.time())
             )
             return None
 
@@ -176,9 +183,7 @@ class CacheManager:
 class AsyncCacheManager:
     """Asynchronous Redis-based cache manager with dependency tracking."""
 
-    def __init__(
-        self, redis_client: async_redis.Redis | None = None, prefix: str = "cache"
-    ):
+    def __init__(self, redis_client: async_redis.Redis | None = None, prefix: str = "cache"):
         if redis_client is None:
             logger.info(
                 "Creating async Redis client from environment configuration. "
@@ -246,9 +251,7 @@ class AsyncCacheManager:
         if value is None:
             # Emit cache miss event
             self.events.emit(
-                CacheEvent(
-                    event_type=CacheEventType.MISS, key=key, timestamp=time.time()
-                )
+                CacheEvent(event_type=CacheEventType.MISS, key=key, timestamp=time.time())
             )
             return None
 

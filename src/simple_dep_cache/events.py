@@ -47,9 +47,7 @@ class EventEmitter:
         }
         self._global_callbacks: list[Callable] = []
 
-    def on(
-        self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]
-    ) -> None:
+    def on(self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]) -> None:
         """Register a callback for a specific event type."""
         self._callbacks[event_type].append(callback)
 
@@ -57,9 +55,7 @@ class EventEmitter:
         """Register a callback for all event types."""
         self._global_callbacks.append(callback)
 
-    def off(
-        self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]
-    ) -> bool:
+    def off(self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]) -> bool:
         """Unregister a callback for a specific event type."""
         if callback in self._callbacks[event_type]:
             self._callbacks[event_type].remove(callback)

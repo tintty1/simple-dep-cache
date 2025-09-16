@@ -71,9 +71,7 @@ class TestAsyncCacheManager:
         await async_cache_manager.set("key1", "value1", ttl=60)
         result = await async_cache_manager.get("key1")
         assert result == "value1"
-        ttl = await async_cache_manager.redis.ttl(
-            async_cache_manager._cache_key("key1")
-        )
+        ttl = await async_cache_manager.redis.ttl(async_cache_manager._cache_key("key1"))
         assert ttl <= 60
 
     @pytest.mark.asyncio
@@ -257,9 +255,7 @@ class TestAsyncCacheManager:
         assert await async_cache_manager.get("key2") is None
         assert await async_cache_manager.get("key3") == "value3"
 
-        exists = await async_cache_manager.redis.exists(
-            async_cache_manager._deps_key("dep1")
-        )
+        exists = await async_cache_manager.redis.exists(async_cache_manager._deps_key("dep1"))
         assert not exists
 
     @pytest.mark.asyncio
@@ -268,9 +264,7 @@ class TestAsyncCacheManager:
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_invalidate_dependency_emits_event(
-        self, async_cache_manager, event_listener
-    ):
+    async def test_invalidate_dependency_emits_event(self, async_cache_manager, event_listener):
         async_cache_manager.events.on(CacheEventType.INVALIDATE, event_listener)
         await async_cache_manager.set("key1", "value1", dependencies={"dep1"})
 
@@ -344,23 +338,15 @@ class TestAsyncCacheManager:
 
     @pytest.mark.asyncio
     async def test_multiple_dependencies_same_key(self, async_cache_manager):
-        await async_cache_manager.set(
-            "key1", "value1", dependencies={"dep1", "dep2", "dep3"}
-        )
+        await async_cache_manager.set("key1", "value1", dependencies={"dep1", "dep2", "dep3"})
 
         await async_cache_manager.invalidate_dependency("dep2")
 
         assert await async_cache_manager.get("key1") is None
 
-        exists_dep2 = await async_cache_manager.redis.exists(
-            async_cache_manager._deps_key("dep2")
-        )
-        exists_dep1 = await async_cache_manager.redis.exists(
-            async_cache_manager._deps_key("dep1")
-        )
-        exists_dep3 = await async_cache_manager.redis.exists(
-            async_cache_manager._deps_key("dep3")
-        )
+        exists_dep2 = await async_cache_manager.redis.exists(async_cache_manager._deps_key("dep2"))
+        exists_dep1 = await async_cache_manager.redis.exists(async_cache_manager._deps_key("dep1"))
+        exists_dep3 = await async_cache_manager.redis.exists(async_cache_manager._deps_key("dep3"))
 
         assert not exists_dep2
         assert exists_dep1

@@ -357,9 +357,7 @@ class TestAsyncCacheWithDeps:
     async def test_caching_with_additional_dependencies(self, async_cache_manager):
         call_count = 0
 
-        @async_cache_with_deps(
-            cache_manager=async_cache_manager, dependencies={"external_dep"}
-        )
+        @async_cache_with_deps(cache_manager=async_cache_manager, dependencies={"external_dep"})
         async def expensive_function(x):
             nonlocal call_count
             call_count += 1
@@ -404,9 +402,7 @@ class TestAsyncCacheWithDeps:
     async def test_caching_with_combined_dependencies(self, async_cache_manager):
         call_count = 0
 
-        @async_cache_with_deps(
-            cache_manager=async_cache_manager, dependencies={"static_dep"}
-        )
+        @async_cache_with_deps(cache_manager=async_cache_manager, dependencies={"static_dep"})
         async def expensive_function(x):
             nonlocal call_count
             call_count += 1
