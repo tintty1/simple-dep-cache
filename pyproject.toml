@@ -36,6 +36,7 @@ dev = [
     "pytest-asyncio",
     "fakeredis",
     "ruff",
+    "pre-commit>=4.3.0",
 ]
 
 [tool.hatch.version]
