@@ -12,7 +12,11 @@ from simple_dep_cache.context import (
     set_current_cache_key,
     set_current_dependencies,
 )
-from simple_dep_cache.decorators import async_cache_with_deps, cache_with_deps
+from simple_dep_cache.decorators import (
+    _get_cache_key_for_arg,
+    async_cache_with_deps,
+    cache_with_deps,
+)
 from simple_dep_cache.manager import AsyncCacheManager, CacheManager
 
 
@@ -553,3 +557,140 @@ class TestAsyncCacheWithDeps:
 
         assert all(result == 10 for result in results)
         assert call_count == 1
+
+
+class TestCacheKeyGeneration:
+    def test_get_cache_key_for_arg_basic_types(self):
+        # Test basic types use string representation
+        assert _get_cache_key_for_arg(42) == "42"
+        assert _get_cache_key_for_arg("hello") == "hello"
+        assert _get_cache_key_for_arg(True) == "True"
+
+    def test_get_cache_key_for_arg_custom_cache_key_method(self):
+        class CustomObject:
+            def __cache_key__(self):
+                return "custom_key_123"
+
+        obj = CustomObject()
+        assert _get_cache_key_for_arg(obj) == "custom_key_123"
+
+    def test_get_cache_key_for_arg_cache_key_attribute(self):
+        class CustomObject:
+            _cache_key = "attribute_key_789"
+
+        obj = CustomObject()
+        assert _get_cache_key_for_arg(obj) == "attribute_key_789"
+
+    def test_get_cache_key_for_arg_django_like_model(self):
+        class DjangoLikeModel:
+            pk = 123
+
+            def __str__(self):
+                return "DjangoLikeModel object (123)"
+
+        obj = DjangoLikeModel()
+        assert _get_cache_key_for_arg(obj) == "DjangoLikeModel::123"
+
+    def test_get_cache_key_for_arg_object_with_id(self):
+        class ObjectWithId:
+            id = 456
+
+            def __str__(self):
+                return "ObjectWithId object (456)"
+
+        obj = ObjectWithId()
+        assert _get_cache_key_for_arg(obj) == "ObjectWithId::456"
+
+    def test_get_cache_key_for_arg_priority_order(self):
+        # __cache_key__ method should take priority over pk/id
+        class ModelWithCacheKey:
+            pk = 123
+            id = 456
+
+            def __cache_key__(self):
+                return "custom_override"
+
+        obj = ModelWithCacheKey()
+        assert _get_cache_key_for_arg(obj) == "custom_override"
+
+        # _cache_key attribute should take priority over pk/id
+        class ModelWithCacheKeyAttr:
+            pk = 123
+            id = 456
+            _cache_key = "attr_override"
+
+        obj2 = ModelWithCacheKeyAttr()
+        assert _get_cache_key_for_arg(obj2) == "attr_override"
+
+        # pk should take priority over id
+        class ModelWithBoth:
+            pk = 123
+            id = 456
+
+        obj3 = ModelWithBoth()
+        assert _get_cache_key_for_arg(obj3) == "ModelWithBoth::123"
+
+    def test_cache_with_custom_objects(self, cache_manager):
+        call_count = 0
+
+        class User:
+            def __init__(self, user_id):
+                self.id = user_id
+
+            def __cache_key__(self):
+                return f"User::{self.id}"
+
+        @cache_with_deps(cache_manager=cache_manager)
+        def get_user_data(user):
+            nonlocal call_count
+            call_count += 1
+            return f"data_for_{user.id}"
+
+        user1 = User(123)
+        user2 = User(123)  # Different object, same ID
+        user3 = User(456)  # Different ID
+
+        # Same logical user should hit cache
+        result1 = get_user_data(user1)
+        result2 = get_user_data(user2)
+
+        assert result1 == "data_for_123"
+        assert result2 == "data_for_123"
+        assert call_count == 1
+
+        # Different user should miss cache
+        result3 = get_user_data(user3)
+        assert result3 == "data_for_456"
+        assert call_count == 2
+
+    def test_cache_with_mixed_argument_types(self, cache_manager):
+        call_count = 0
+
+        class Model:
+            def __init__(self, model_id):
+                self.id = model_id
+
+            def __cache_key__(self):
+                return f"Model::{self.id}"
+
+        @cache_with_deps(cache_manager=cache_manager)
+        def complex_function(model, count, name="default"):
+            nonlocal call_count
+            call_count += 1
+            return f"{model.id}_{count}_{name}"
+
+        model1 = Model(42)
+        model2 = Model(42)  # Same logical model
+
+        # Same arguments should hit cache
+        result1 = complex_function(model1, 10, name="test")
+        result2 = complex_function(model2, 10, name="test")
+
+        assert result1 == "42_10_test"
+        assert result2 == "42_10_test"
+        assert call_count == 1
+
+        # Different arguments should miss cache
+        result3 = complex_function(model1, 20, name="test")
+        assert result3 == "42_20_test"
+        assert call_count == 2

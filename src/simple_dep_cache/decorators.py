@@ -13,6 +13,29 @@ from .context import (
 from .manager import AsyncCacheManager, CacheManager
 
 
+def _get_cache_key_for_arg(arg) -> str:
+    """Get cache key representation for a single argument."""
+    # Check for custom cache key method
+    if hasattr(arg, "__cache_key__"):
+        cache_key = arg.__cache_key__
+        if callable(cache_key):
+            return str(cache_key())
+        return str(cache_key)
+
+    # Check for custom cache key attribute
+    if hasattr(arg, "_cache_key"):
+        return str(arg._cache_key)
+
+    # For common types, use more stable representations
+    if hasattr(arg, "pk"):  # Django model-like objects
+        return f"{arg.__class__.__name__}::{arg.pk}"
+    elif hasattr(arg, "id"):  # Objects with id attribute
+        return f"{arg.__class__.__name__}::{arg.id}"
+
+    # Fall back to string representation
+    return str(arg)
+
+
 def _generate_cache_key(func: Callable, args: tuple, kwargs: dict) -> str:
     """Generate a cache key based on function name and arguments."""
     func_name = f"{func.__module__}.{func.__qualname__}"
@@ -22,11 +45,11 @@ def _generate_cache_key(func: Callable, args: tuple, kwargs: dict) -> str:
 
     # Add positional args
     for arg in args:
-        arg_parts.append(str(arg))
+        arg_parts.append(_get_cache_key_for_arg(arg))
 
     # Add keyword args (sorted for consistency)
     for key in sorted(kwargs.keys()):
-        arg_parts.append(f"{key}={kwargs[key]}")
+        arg_parts.append(f"{key}={_get_cache_key_for_arg(kwargs[key])}")
 
     args_str = ",".join(arg_parts)
     full_key = f"{func_name}({args_str})"

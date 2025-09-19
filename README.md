@@ -52,6 +52,48 @@ cache.invalidate_dependency("user:123")
 profile = get_user_profile("123")  # Cache miss - will fetch fresh data
 ```
 
+### Custom Cache Key Generation
+
+For complex objects, you can control how cache keys are generated:
+
+```python
+class User:
+    def __init__(self, user_id, email):
+        self.id = user_id
+        self.email = email
+
+    def __cache_key__(self):
+        """Define custom cache key generation for this object"""
+        return f"User::{self.id}"
+
+class Product:
+    def __init__(self, product_id):
+        self.pk = product_id  # Django-style primary key
+
+    # No custom __cache_key__ needed - will automatically use "Product::{pk}"
+
+@cache_with_deps()
+def get_user_orders(user, product_filter=None):
+    # Cache key will be generated using User.__cache_key__() and Product's pk
+    add_dependency(f"user:{user.id}:orders")
+    return fetch_orders(user.id, product_filter)
+
+# Usage
+user = User(123, "user@example.com")
+product = Product(456)
+
+orders1 = get_user_orders(user, product)  # Cache miss
+orders2 = get_user_orders(user, product)  # Cache hit - same logical objects
+```
+
+**Cache Key Generation Priority:**
+
+1. `__cache_key__()` method (if present)
+2. `_cache_key` attribute (if present)
+3. `pk` attribute for Django-style models
+4. `id` attribute for objects with IDs
+5. `str()` representation (fallback)
+
 ### Async Support
 
 ```python
