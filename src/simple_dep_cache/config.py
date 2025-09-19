@@ -111,6 +111,16 @@ class Config:
         """
         return _str_to_int(os.getenv("REDIS_MAX_CONNECTIONS", "50"), 50)
 
+    @property
+    def serializer_class(self) -> str | None:
+        """Serializer class to use for cache values. Default: simple_dep_cache.types.JSONSerializer
+        Environment variable: DEP_CACHE_SERIALIZER
+
+        Example: mypackage.CustomPickleSerializer
+        The class must inherit from simple_dep_cache.types.BaseSerializer
+        """
+        return os.getenv("DEP_CACHE_SERIALIZER")
+
 
 def create_redis_client_from_config(
     config_instance: Config | None = None,

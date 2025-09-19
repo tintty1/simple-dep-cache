@@ -9,7 +9,7 @@ from .config import (
     create_redis_client_from_config,
 )
 from .events import CacheEvent, CacheEventType, EventEmitter
-from .types import CacheValue, deserialize_value, serialize_value
+from .types import CacheValue, get_serializer
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class CacheManager:
             self._redis = redis_client
         self.prefix = prefix
         self.events = EventEmitter()
+        self.serializer = get_serializer()
 
     @property
     def redis(self) -> redis.Redis:
@@ -57,7 +58,7 @@ class CacheManager:
     ) -> None:
         """Set a cache value with optional TTL and dependencies."""
         cache_key = self._cache_key(key)
-        serialized_value = serialize_value(value)
+        serialized_value = self.serializer.dump(value)
 
         if ttl:
             self.redis.setex(cache_key, ttl, serialized_value)
@@ -101,7 +102,7 @@ class CacheManager:
             return None
 
         # Emit cache hit event
-        deserialized_value = deserialize_value(value)
+        deserialized_value = self.serializer.load(value)
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.HIT,
@@ -194,6 +195,7 @@ class AsyncCacheManager:
             self.redis = redis_client
         self.prefix = prefix
         self.events = EventEmitter()
+        self.serializer = get_serializer()
 
     def _cache_key(self, key: str) -> str:
         """Generate prefixed cache key."""
@@ -212,7 +214,7 @@ class AsyncCacheManager:
     ) -> None:
         """Set a cache value with optional TTL and dependencies."""
         cache_key = self._cache_key(key)
-        serialized_value = serialize_value(value)
+        serialized_value = self.serializer.dump(value)
 
         if ttl:
             await self.redis.setex(cache_key, ttl, serialized_value)
@@ -256,7 +258,7 @@ class AsyncCacheManager:
             return None
 
         # Emit cache hit event
-        deserialized_value = deserialize_value(value)
+        deserialized_value = self.serializer.load(value)
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.HIT,

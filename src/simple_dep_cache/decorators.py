@@ -64,6 +64,7 @@ def cache_with_deps(
     ttl: int | None = None,
     key_prefix: str | None = None,
     dependencies: set | None = None,
+    cache_exception_types: list[type[Exception]] | None = None,
 ) -> Callable:
     """
     Decorator for caching function results with dependency tracking.
@@ -73,6 +74,8 @@ def cache_with_deps(
         ttl: Time to live in seconds (optional)
         key_prefix: Custom prefix for cache keys (optional)
         dependencies: Additional dependencies to track (optional)
+        cache_exception_types: List of exception types to cache.
+            If None or empty, exceptions are not cached (optional)
     """
 
     def decorator(func: Callable) -> Callable:
@@ -93,6 +96,9 @@ def cache_with_deps(
             # Check cache first
             cached_result = active_cache_manager.get(cache_key)
             if cached_result is not None:
+                # If cached result is an exception, re-raise it
+                if isinstance(cached_result, Exception):
+                    raise cached_result
                 return cached_result
 
             # Set up context for dependency tracking
@@ -123,7 +129,33 @@ def cache_with_deps(
                 )
 
                 return result
+            except Exception as exc:
+                # Check if we should cache this exception type
+                should_cache_exception = cache_exception_types and any(
+                    isinstance(exc, exc_type) for exc_type in cache_exception_types
+                )
 
+                if should_cache_exception:
+                    # Get dependencies collected during execution
+                    collected_dependencies = get_current_dependencies()
+
+                    # Combine collected dependencies with additional dependencies
+                    all_dependencies = set()
+                    if collected_dependencies:
+                        all_dependencies.update(collected_dependencies)
+                    if dependencies:
+                        all_dependencies.update(dependencies)
+
+                    # Cache the exception with dependencies
+                    active_cache_manager.set(
+                        cache_key,
+                        exc,
+                        ttl,
+                        all_dependencies if all_dependencies else None,
+                    )
+
+                # Re-raise the exception whether we cached it or not
+                raise
             finally:
                 # Restore previous context
                 set_current_dependencies(old_dependencies)
@@ -140,6 +172,7 @@ def async_cache_with_deps(
     ttl: int | None = None,
     key_prefix: str | None = None,
     dependencies: set | None = None,
+    cache_exception_types: list[type[Exception]] | None = None,
 ) -> Callable:
     """
     Async decorator for caching function results with dependency tracking.
@@ -149,6 +182,8 @@ def async_cache_with_deps(
         ttl: Time to live in seconds (optional)
         key_prefix: Custom prefix for cache keys (optional)
         dependencies: Additional dependencies to track (optional)
+        cache_exception_types: List of exception types to cache.
+            If None or empty, exceptions are not cached (optional)
     """
 
     def decorator(func: Callable) -> Callable:
@@ -172,6 +207,9 @@ def async_cache_with_deps(
             # Check cache first
             cached_result = await active_cache_manager.get(cache_key)
             if cached_result is not None:
+                # If cached result is an exception, re-raise it
+                if isinstance(cached_result, Exception):
+                    raise cached_result
                 return cached_result
 
             # Set up context for dependency tracking
@@ -205,7 +243,33 @@ def async_cache_with_deps(
                 )
 
                 return result
+            except Exception as exc:
+                # Check if we should cache this exception type
+                should_cache_exception = cache_exception_types and any(
+                    isinstance(exc, exc_type) for exc_type in cache_exception_types
+                )
 
+                if should_cache_exception:
+                    # Get dependencies collected during execution
+                    collected_dependencies = get_current_dependencies()
+
+                    # Combine collected dependencies with additional dependencies
+                    all_dependencies = set()
+                    if collected_dependencies:
+                        all_dependencies.update(collected_dependencies)
+                    if dependencies:
+                        all_dependencies.update(dependencies)
+
+                    # Cache the exception with dependencies
+                    await active_cache_manager.set(
+                        cache_key,
+                        exc,
+                        ttl,
+                        all_dependencies if all_dependencies else None,
+                    )
+
+                # Re-raise the exception whether we cached it or not
+                raise
             finally:
                 # Restore previous context
                 set_current_dependencies(old_dependencies)

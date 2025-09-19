@@ -265,6 +265,186 @@ class TestCacheWithDeps:
 
         assert get_current_dependencies() == old_deps
 
+    def test_exception_caching_enabled(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError])
+        def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x < 0:
+                raise ValueError(f"Negative value: {x}")
+            return x * 2
+
+        # First call should raise and cache the exception
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            failing_function(-1)
+        assert call_count == 1
+
+        # Second call with same arguments should retrieve cached exception
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            failing_function(-1)
+        assert call_count == 1  # Should not increment, exception was cached
+
+        # Positive value should work normally
+        result = failing_function(5)
+        assert result == 10
+        assert call_count == 2
+
+    def test_exception_caching_disabled_by_default(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager)
+        def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x < 0:
+                raise ValueError(f"Negative value: {x}")
+            return x * 2
+
+        # Exception should not be cached when cache_exception_types is not provided
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            failing_function(-1)
+        assert call_count == 1
+
+        # Second call should execute function again
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            failing_function(-1)
+        assert call_count == 2
+
+    def test_exception_caching_specific_types(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError])
+        def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x == -1:
+                raise ValueError("ValueError message")
+            elif x == -2:
+                raise RuntimeError("RuntimeError message")
+            return x * 2
+
+        # ValueError should be cached
+        with pytest.raises(ValueError, match="ValueError message"):
+            failing_function(-1)
+        assert call_count == 1
+
+        with pytest.raises(ValueError, match="ValueError message"):
+            failing_function(-1)
+        assert call_count == 1  # Should not increment
+
+        # RuntimeError should not be cached (not in cache_exception_types)
+        with pytest.raises(RuntimeError, match="RuntimeError message"):
+            failing_function(-2)
+        assert call_count == 2
+
+        with pytest.raises(RuntimeError, match="RuntimeError message"):
+            failing_function(-2)
+        assert call_count == 3  # Should increment since not cached
+
+    def test_exception_caching_with_dependencies(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(
+            cache_manager=cache_manager,
+            cache_exception_types=[ValueError],
+            dependencies={"static_dep"},
+        )
+        def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            add_dependency("dynamic_dep")
+            raise ValueError(f"Error: {x}")
+
+        # Cache the exception
+        with pytest.raises(ValueError, match="Error: 5"):
+            failing_function(5)
+        assert call_count == 1
+
+        # Should hit cache
+        with pytest.raises(ValueError, match="Error: 5"):
+            failing_function(5)
+        assert call_count == 1
+
+        # Invalidate static dependency - should clear cache
+        cache_manager.invalidate_dependency("static_dep")
+        with pytest.raises(ValueError, match="Error: 5"):
+            failing_function(5)
+        assert call_count == 2
+
+        # Cache again and invalidate dynamic dependency
+        with pytest.raises(ValueError, match="Error: 5"):
+            failing_function(5)
+        assert call_count == 2
+
+        cache_manager.invalidate_dependency("dynamic_dep")
+        with pytest.raises(ValueError, match="Error: 5"):
+            failing_function(5)
+        assert call_count == 3
+
+    def test_exception_caching_with_ttl(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError], ttl=60)
+        def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            raise ValueError(f"Error: {x}")
+
+        # Cache the exception
+        with pytest.raises(ValueError, match="Error: 1"):
+            failing_function(1)
+        assert call_count == 1
+
+        # Should hit cache
+        with pytest.raises(ValueError, match="Error: 1"):
+            failing_function(1)
+        assert call_count == 1
+
+    def test_exception_caching_inheritance(self, cache_manager):
+        call_count = 0
+
+        class CustomError(ValueError):
+            pass
+
+        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError])
+        def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x == 1:
+                raise ValueError("Base error")
+            elif x == 2:
+                raise CustomError("Custom error")
+            return x
+
+        # Base ValueError should be cached
+        with pytest.raises(ValueError, match="Base error"):
+            failing_function(1)
+        assert call_count == 1
+
+        with pytest.raises(ValueError, match="Base error"):
+            failing_function(1)
+        assert call_count == 1  # Cached
+
+        # CustomError (subclass of ValueError) should also be cached
+        with pytest.raises(CustomError, match="Custom error"):
+            failing_function(2)
+        assert call_count == 2
+
+        # The cached exception should have the same type and message
+        # but will be a different instance due to serialization/deserialization
+        with pytest.raises(Exception, match="Custom error") as exc_info:
+            failing_function(2)
+        assert call_count == 2  # Cached due to inheritance
+
+        # Verify the cached exception maintains the correct type name
+        # Note: Due to serialization, it might be a dynamically created type
+        # but should still have the same name and message
+        cached_exc = exc_info.value
+        assert type(cached_exc).__name__ == "CustomError"
+        assert str(cached_exc) == "Custom error"
+
 
 class TestAsyncCacheWithDeps:
     @pytest.mark.asyncio
@@ -535,6 +715,202 @@ class TestAsyncCacheWithDeps:
             await failing_function(5)
 
         assert get_current_dependencies() == old_deps
+
+    @pytest.mark.asyncio
+    async def test_exception_caching_enabled_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(
+            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
+        )
+        async def failing_async_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x < 0:
+                raise ValueError(f"Negative value: {x}")
+            return x * 2
+
+        # First call should raise and cache the exception
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            await failing_async_function(-1)
+        assert call_count == 1
+
+        # Second call with same arguments should retrieve cached exception
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            await failing_async_function(-1)
+        assert call_count == 1  # Should not increment, exception was cached
+
+        # Positive value should work normally
+        result = await failing_async_function(5)
+        assert result == 10
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exception_caching_enabled_sync_in_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(
+            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
+        )
+        def failing_sync_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x < 0:
+                raise ValueError(f"Negative value: {x}")
+            return x * 2
+
+        # First call should raise and cache the exception
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            await failing_sync_function(-1)
+        assert call_count == 1
+
+        # Second call with same arguments should retrieve cached exception
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            await failing_sync_function(-1)
+        assert call_count == 1  # Should not increment, exception was cached
+
+    @pytest.mark.asyncio
+    async def test_exception_caching_disabled_by_default_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(cache_manager=async_cache_manager)
+        async def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x < 0:
+                raise ValueError(f"Negative value: {x}")
+            return x * 2
+
+        # Exception should not be cached when cache_exception_types is not provided
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            await failing_function(-1)
+        assert call_count == 1
+
+        # Second call should execute function again
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            await failing_function(-1)
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exception_caching_specific_types_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(
+            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
+        )
+        async def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x == -1:
+                raise ValueError("ValueError message")
+            elif x == -2:
+                raise RuntimeError("RuntimeError message")
+            return x * 2
+
+        # ValueError should be cached
+        with pytest.raises(ValueError, match="ValueError message"):
+            await failing_function(-1)
+        assert call_count == 1
+
+        with pytest.raises(ValueError, match="ValueError message"):
+            await failing_function(-1)
+        assert call_count == 1  # Should not increment
+
+        # RuntimeError should not be cached (not in cache_exception_types)
+        with pytest.raises(RuntimeError, match="RuntimeError message"):
+            await failing_function(-2)
+        assert call_count == 2
+
+        with pytest.raises(RuntimeError, match="RuntimeError message"):
+            await failing_function(-2)
+        assert call_count == 3  # Should increment since not cached
+
+    @pytest.mark.asyncio
+    async def test_exception_caching_with_dependencies_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(
+            cache_manager=async_cache_manager,
+            cache_exception_types=[ValueError],
+            dependencies={"static_dep"},
+        )
+        async def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            add_dependency("dynamic_dep")
+            raise ValueError(f"Error: {x}")
+
+        # Cache the exception
+        with pytest.raises(ValueError, match="Error: 5"):
+            await failing_function(5)
+        assert call_count == 1
+
+        # Should hit cache
+        with pytest.raises(ValueError, match="Error: 5"):
+            await failing_function(5)
+        assert call_count == 1
+
+        # Invalidate static dependency - should clear cache
+        await async_cache_manager.invalidate_dependency("static_dep")
+        with pytest.raises(ValueError, match="Error: 5"):
+            await failing_function(5)
+        assert call_count == 2
+
+        # Cache again and invalidate dynamic dependency
+        with pytest.raises(ValueError, match="Error: 5"):
+            await failing_function(5)
+        assert call_count == 2
+
+        await async_cache_manager.invalidate_dependency("dynamic_dep")
+        with pytest.raises(ValueError, match="Error: 5"):
+            await failing_function(5)
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_exception_caching_inheritance_async(self, async_cache_manager):
+        call_count = 0
+
+        class CustomError(ValueError):
+            pass
+
+        @async_cache_with_deps(
+            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
+        )
+        async def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x == 1:
+                raise ValueError("Base error")
+            elif x == 2:
+                raise CustomError("Custom error")
+            return x
+
+        # Base ValueError should be cached
+        with pytest.raises(ValueError, match="Base error"):
+            await failing_function(1)
+        assert call_count == 1
+
+        with pytest.raises(ValueError, match="Base error"):
+            await failing_function(1)
+        assert call_count == 1  # Cached
+
+        # CustomError (subclass of ValueError) should also be cached
+        with pytest.raises(CustomError, match="Custom error"):
+            await failing_function(2)
+        assert call_count == 2
+
+        # The cached exception should have the same type and message
+        # but will be a different instance due to serialization/deserialization
+        with pytest.raises(Exception, match="Custom error") as exc_info:
+            await failing_function(2)
+        assert call_count == 2  # Cached due to inheritance
+
+        # Verify the cached exception maintains the correct type name
+        # Note: Due to serialization, it might be a dynamically created type
+        # but should still have the same name and message
+        cached_exc = exc_info.value
+        assert type(cached_exc).__name__ == "CustomError"
+        assert str(cached_exc) == "Custom error"
 
     @pytest.mark.asyncio
     async def test_concurrent_cached_calls(self, async_cache_manager):

@@ -94,6 +94,50 @@ orders2 = get_user_orders(user, product)  # Cache hit - same logical objects
 4. `id` attribute for objects with IDs
 5. `str()` representation (fallback)
 
+### Exception Caching
+
+Cache specific exception types to avoid repeated expensive operations that fail:
+
+```python
+import requests
+from simple_dep_cache import cache_with_deps
+
+@cache_with_deps(
+    ttl=300,
+    cache_exception_types=[requests.RequestException, ValueError]
+)
+def fetch_external_data(api_url):
+    # This might raise RequestException on network issues
+    # or ValueError on invalid response format
+    response = requests.get(api_url, timeout=5)
+    response.raise_for_status()
+
+    data = response.json()
+    if not data.get("valid"):
+        raise ValueError("Invalid response format")
+
+    return data
+
+# First call - may raise and cache the exception
+try:
+    result = fetch_external_data("https://api.example.com/data")
+except requests.RequestException as e:
+    print(f"Network error (cached): {e}")
+
+# Second call - exception retrieved from cache (no network call made)
+try:
+    result = fetch_external_data("https://api.example.com/data")
+except requests.RequestException as e:
+    print(f"Network error (from cache): {e}")
+```
+
+**Exception caching rules:**
+
+- Only exceptions listed in `cache_exception_types` are cached
+- If `cache_exception_types` is `None` or empty, no exceptions are cached
+- Exceptions follow the same TTL and dependency rules as successful results
+- Exception inheritance is respected (child exceptions are cached if parent type is listed)
+
 ### Async Support
 
 ```python
@@ -114,6 +158,20 @@ profile = await get_user_profile_async("123")  # Cache hit
 await cache.invalidate_dependency("user:123")
 ```
 
+**Async exception caching:**
+
+```python
+@async_cache_with_deps(
+    cache_exception_types=[aiohttp.ClientError, asyncio.TimeoutError]
+)
+async def fetch_async_data(url):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=5) as response:
+            if response.status != 200:
+                raise aiohttp.ClientError(f"HTTP {response.status}")
+            return await response.json()
+```
+
 ### Monitoring
 
 ```python
@@ -128,6 +186,41 @@ cache.events.on_all(create_logger_callback("my_cache"))
 print(stats.get_stats())  # hit_ratio, ops_per_second, etc.
 ```
 
+### Custom Serializers
+
+By default, cache values are serialized using JSON. For advanced use cases (like preserving full exception details or using more efficient serialization), you can implement custom serializers:
+
+```python
+from simple_dep_cache import BaseSerializer
+import pickle
+import base64
+
+class PickleSerializer(BaseSerializer):
+    """Custom serializer using pickle for full object preservation."""
+
+    def dump(self, obj) -> str:
+        pickled = pickle.dumps(obj)
+        return base64.b64encode(pickled).decode('utf-8')
+
+    def load(self, data: str):
+        pickled = base64.b64decode(data.encode('utf-8'))
+        return pickle.loads(pickled)
+
+# Use via environment variable
+# DEP_CACHE_SERIALIZER=myapp.serializers.PickleSerializer
+```
+
+**Built-in serializers:**
+
+- `JSONSerializer` (default): Safe, human-readable, but may lose some exception details
+- Custom serializers: Implement `BaseSerializer` for full control
+
+**Serializer considerations:**
+
+- **Security**: Pickle can execute arbitrary code - only use with trusted data
+- **Compatibility**: Custom serializers must be available when deserializing
+- **Performance**: JSON is fast for simple data, pickle preserves complex objects
+
 ## Configuration
 
 ```bash
@@ -136,6 +229,7 @@ REDIS_HOST=localhost                  # Or individual settings
 REDIS_PORT=6379
 REDIS_PASSWORD=secret
 DEP_CACHE_ENABLED=true                # Disable caching entirely
+DEP_CACHE_SERIALIZER=simple_dep_cache.types.JSONSerializer  # Custom serializer class
 ```
 
 ## Manual Cache Operations
@@ -154,10 +248,16 @@ cache.invalidate_dependency("dep1")  # Invalidates all dependent caches
 
 **Decorators:**
 
-- `@cache_with_deps(cache_manager, ttl, key_prefix, dependencies)`
-- `@async_cache_with_deps(cache_manager, ttl, key_prefix, dependencies)`
+- `@cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types)`
+- `@async_cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types)`
 
-If `cache_manager` is not provided, one will be created automatically using configured environment variables or defaults.
+**Parameters:**
+
+- `cache_manager`: Cache manager instance (optional, auto-created if not provided)
+- `ttl`: Time to live in seconds (optional)
+- `key_prefix`: Custom prefix for cache keys (optional)
+- `dependencies`: Additional static dependencies to track (optional)
+- `cache_exception_types`: List of exception types to cache (optional, no exceptions cached if None/empty)
 
 **Context:**
 
@@ -172,6 +272,11 @@ If `cache_manager` is not provided, one will be created automatically using conf
 **Monitoring:**
 
 - `StatsCollector()` - Cache statistics
+
+**Serializers:**
+
+- `BaseSerializer` - Abstract base class for custom serializers
+- `JSONSerializer` - Default JSON-based serializer with exception support
 
 ## Requirements
 
