@@ -17,7 +17,7 @@ pip install simple-dep-cache
 ### Basic Usage
 
 ```python
-from simple_dep_cache import cache_with_deps, add_dependency, CacheManager
+from simple_dep_cache import cache_with_deps, add_dependency, get_cache_manager, CacheManager
 
 # Initialize cache manager (optional - will be created automatically if not provided)
 cache = CacheManager()
@@ -50,6 +50,13 @@ cache.invalidate_dependency("user:123")
 # Now both get_user_profile("123") and get_user_posts("123") are invalidated!
 
 profile = get_user_profile("123")  # Cache miss - will fetch fresh data
+
+# Access the cache manager from within a cached function
+@cache_with_deps()
+def some_function():
+    current_cache = get_cache_manager()  # Get the active cache manager
+    current_cache.invalidate_dependency("some:dependency")
+    return "result"
 ```
 
 ### Custom Cache Key Generation
@@ -263,6 +270,7 @@ cache.invalidate_dependency("dep1")  # Invalidates all dependent caches
 
 - `add_dependency(dependency)` - Track dependency in current function
 - `current_cache_key()` - Get current cache key
+- `get_cache_manager()` - Get current cache manager instance
 
 **Managers:**
 
