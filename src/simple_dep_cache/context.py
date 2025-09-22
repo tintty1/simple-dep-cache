@@ -1,8 +1,15 @@
 from contextvars import ContextVar
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .manager import AsyncCacheManager, CacheManager
 
 _current_cache_key: ContextVar[str | None] = ContextVar("current_cache_key", default=None)
 _current_dependencies: ContextVar[None | set[str]] = ContextVar(
     "current_dependencies", default=None
+)
+_current_cache_manager: ContextVar["CacheManager | AsyncCacheManager | None"] = ContextVar(
+    "current_cache_manager", default=None
 )
 
 
@@ -36,3 +43,13 @@ def clear_current_dependencies() -> None:
 def set_current_dependencies(dependencies: set[str]) -> None:
     """Set the current dependencies."""
     _current_dependencies.set(dependencies)
+
+
+def get_cache_manager() -> "CacheManager | AsyncCacheManager | None":
+    """Get the current cache manager from context."""
+    return _current_cache_manager.get()
+
+
+def set_cache_manager(cache_manager: "CacheManager | AsyncCacheManager") -> None:
+    """Set the current cache manager in context."""
+    _current_cache_manager.set(cache_manager)

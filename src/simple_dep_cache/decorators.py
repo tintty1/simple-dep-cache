@@ -7,6 +7,7 @@ from .config import config
 from .context import (
     clear_current_dependencies,
     get_current_dependencies,
+    set_cache_manager,
     set_current_cache_key,
     set_current_dependencies,
 )
@@ -105,6 +106,7 @@ def cache_with_deps(
             old_dependencies = get_current_dependencies()
             clear_current_dependencies()
             set_current_cache_key(cache_key)
+            set_cache_manager(active_cache_manager)
 
             try:
                 # Execute function
@@ -216,6 +218,7 @@ def async_cache_with_deps(
             old_dependencies = get_current_dependencies()
             clear_current_dependencies()
             set_current_cache_key(cache_key)
+            set_cache_manager(active_cache_manager)
 
             try:
                 # Execute function
