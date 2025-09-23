@@ -33,6 +33,15 @@ class _ContextState(NamedTuple):
     cache_ttl: int | None
 
 
+class _ContextState(NamedTuple):
+    """Represents the saved context state for restoration."""
+
+    dependencies: set | None
+    cache_key: str | None
+    cache_manager: CacheManager | AsyncCacheManager | None
+    cache_ttl: int | None
+
+
 def _get_cache_key_for_arg(arg) -> str:
     """Get cache key representation for a single argument."""
     # Check for custom cache key method
