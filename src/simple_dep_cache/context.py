@@ -41,7 +41,7 @@ def clear_current_dependencies() -> None:
     _current_dependencies.set(set())
 
 
-def set_current_dependencies(dependencies: set[str]) -> None:
+def set_current_dependencies(dependencies: None | set[str]) -> None:
     """Set the current dependencies."""
     _current_dependencies.set(dependencies)
 

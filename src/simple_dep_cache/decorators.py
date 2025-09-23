@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 from collections.abc import Callable
 from functools import wraps
+from typing import Any, NamedTuple
 
 from .config import config
 from .context import (
@@ -16,6 +17,15 @@ from .context import (
     set_current_dependencies,
 )
 from .manager import AsyncCacheManager, CacheManager
+
+
+class _ContextState(NamedTuple):
+    """Represents the saved context state for restoration."""
+
+    dependencies: set | None
+    cache_key: str | None
+    cache_manager: CacheManager | AsyncCacheManager | None
+    cache_ttl: int | None
 
 
 def _get_cache_key_for_arg(arg) -> str:
@@ -63,6 +73,139 @@ def _generate_cache_key(func: Callable, args: tuple, kwargs: dict) -> str:
     return hashlib.md5(full_key.encode()).hexdigest()
 
 
+def _generate_cache_key_with_prefix(
+    func: Callable, args: tuple, kwargs: dict, key_prefix: str | None
+) -> str:
+    """Generate cache key with optional prefix."""
+    cache_key = _generate_cache_key(func, args, kwargs)
+    if key_prefix:
+        cache_key = f"{key_prefix}:{cache_key}"
+    return cache_key
+
+
+def _handle_cache_hit(cached_result: Any) -> Any:
+    """Handle cache hit, re-raising exceptions if needed."""
+    if cached_result is not None:
+        if isinstance(cached_result, Exception):
+            raise cached_result
+        return cached_result
+    return None
+
+
+def _setup_context(
+    cache_key: str, cache_manager: CacheManager | AsyncCacheManager
+) -> _ContextState:
+    """Set up context for dependency tracking and return old state."""
+    old_state = _ContextState(
+        dependencies=get_current_dependencies(),
+        cache_key=current_cache_key(),
+        cache_manager=get_cache_manager(),
+        cache_ttl=get_cache_ttl(),
+    )
+
+    clear_current_dependencies()
+    set_current_cache_key(cache_key)
+    set_cache_manager(cache_manager)
+    set_cache_ttl(None)
+
+    return old_state
+
+
+def _restore_context(context_state: _ContextState) -> None:
+    """Restore previous context values."""
+    set_current_dependencies(context_state.dependencies)
+    set_current_cache_key(context_state.cache_key)
+    set_cache_manager(context_state.cache_manager)
+    set_cache_ttl(context_state.cache_ttl)
+
+
+def _collect_and_merge_dependencies(dependencies: set | None) -> set:
+    """Collect dependencies from execution and merge with static dependencies."""
+    collected_dependencies = get_current_dependencies()
+    all_dependencies = set()
+
+    if collected_dependencies:
+        all_dependencies.update(collected_dependencies)
+    if dependencies:
+        all_dependencies.update(dependencies)
+
+    return all_dependencies
+
+
+def _resolve_effective_ttl(context_ttl: int | None, decorator_ttl: int | None) -> int | None:
+    """Resolve effective TTL with context taking precedence."""
+    return context_ttl if context_ttl is not None else decorator_ttl
+
+
+def _should_cache_exception(
+    exc: Exception, cache_exception_types: list[type[Exception]] | None
+) -> bool:
+    """Check if exception should be cached based on type."""
+    return bool(cache_exception_types) and any(
+        isinstance(exc, exc_type) for exc_type in cache_exception_types
+    )
+
+
+def _cache_result_or_exception_sync(
+    cache_manager: CacheManager,
+    cache_key: str,
+    result: Any,
+    exception: Exception | None,
+    dependencies: set | None,
+    ttl: int | None,
+    cache_exception_types: list[type[Exception]] | None,
+) -> None:
+    """Cache result or exception for sync operations."""
+    all_dependencies = _collect_and_merge_dependencies(dependencies)
+
+    effective_ttl = _resolve_effective_ttl(get_cache_ttl(), ttl)
+    if exception is None:
+        cache_manager.set(
+            cache_key,
+            result,
+            effective_ttl,
+            all_dependencies if all_dependencies else None,
+        )
+    else:
+        if _should_cache_exception(exception, cache_exception_types):
+            cache_manager.set(
+                cache_key,
+                exception,
+                effective_ttl,
+                all_dependencies if all_dependencies else None,
+            )
+
+
+async def _cache_result_or_exception_async(
+    cache_manager: AsyncCacheManager,
+    cache_key: str,
+    result: Any,
+    exception: Exception | None,
+    dependencies: set | None,
+    ttl: int | None,
+    cache_exception_types: list[type[Exception]] | None,
+) -> None:
+    """Cache result or exception for async operations."""
+    all_dependencies = _collect_and_merge_dependencies(dependencies)
+    effective_ttl = _resolve_effective_ttl(get_cache_ttl(), ttl)
+
+    if exception is None:
+        await cache_manager.set(
+            cache_key,
+            result,
+            effective_ttl,
+            all_dependencies if all_dependencies else None,
+        )
+    else:
+        if _should_cache_exception(exception, cache_exception_types):
+            await cache_manager.set(
+                cache_key,
+                exception,
+                effective_ttl,
+                all_dependencies if all_dependencies else None,
+            )
+
+
 def cache_with_deps(
     *,
     cache_manager: CacheManager | None = None,
@@ -93,91 +236,38 @@ def cache_with_deps(
             # Use provided cache manager or create default one
             active_cache_manager = cache_manager or CacheManager()
 
-            # Generate cache key
-            cache_key = _generate_cache_key(func, args, kwargs)
-            if key_prefix:
-                cache_key = f"{key_prefix}:{cache_key}"
+            cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
 
-            # Check cache first
             cached_result = active_cache_manager.get(cache_key)
-            if cached_result is not None:
-                # If cached result is an exception, re-raise it
-                if isinstance(cached_result, Exception):
-                    raise cached_result
-                return cached_result
+            cache_hit_result = _handle_cache_hit(cached_result)
+            if cache_hit_result is not None:
+                return cache_hit_result
 
             # Set up context for dependency tracking
-            old_dependencies = get_current_dependencies()
-            old_cache_key = current_cache_key()
-            old_cache_manager = get_cache_manager()
-            old_cache_ttl = get_cache_ttl()
-            clear_current_dependencies()
-            set_current_cache_key(cache_key)
-            set_cache_manager(active_cache_manager)
-            set_cache_ttl(None)  # Clear TTL context for function execution
+            old_context = _setup_context(cache_key, active_cache_manager)
 
+            result = None
+            exception = None
             try:
-                # Execute function
                 result = func(*args, **kwargs)
-
-                # Get dependencies collected during execution
-                collected_dependencies = get_current_dependencies()
-
-                # Combine collected dependencies with additional dependencies
-                all_dependencies = set()
-                if collected_dependencies:
-                    all_dependencies.update(collected_dependencies)
-                if dependencies:
-                    all_dependencies.update(dependencies)
-
-                # Resolve TTL: current context takes precedence over decorator parameter
-                effective_ttl = get_cache_ttl() if get_cache_ttl() is not None else ttl
-
-                # Cache the result with dependencies
-                active_cache_manager.set(
+            except Exception as exc:
+                exception = exc
+            finally:
+                _cache_result_or_exception_sync(
+                    active_cache_manager,
                     cache_key,
                     result,
-                    effective_ttl,
-                    all_dependencies if all_dependencies else None,
+                    exception,
+                    dependencies,
+                    ttl,
+                    cache_exception_types,
                 )
 
-                return result
-            except Exception as exc:
-                # Check if we should cache this exception type
-                should_cache_exception = cache_exception_types and any(
-                    isinstance(exc, exc_type) for exc_type in cache_exception_types
-                )
+                _restore_context(old_context)
 
-                if should_cache_exception:
-                    # Get dependencies collected during execution
-                    collected_dependencies = get_current_dependencies()
-
-                    # Combine collected dependencies with additional dependencies
-                    all_dependencies = set()
-                    if collected_dependencies:
-                        all_dependencies.update(collected_dependencies)
-                    if dependencies:
-                        all_dependencies.update(dependencies)
-
-                    # Resolve TTL: old context takes precedence over decorator parameter
-                    effective_ttl = old_cache_ttl if old_cache_ttl is not None else ttl
-
-                    # Cache the exception with dependencies
-                    active_cache_manager.set(
-                        cache_key,
-                        exc,
-                        effective_ttl,
-                        all_dependencies if all_dependencies else None,
-                    )
-
-                # Re-raise the exception whether we cached it or not
-                raise
-            finally:
-                # Restore previous context
-                set_current_dependencies(old_dependencies)
-                set_current_cache_key(old_cache_key)
-                set_cache_manager(old_cache_manager)
-                set_cache_ttl(old_cache_ttl)
+            if exception is not None:
+                raise exception
+            return result
 
         return wrapper
 
@@ -217,94 +307,41 @@ def async_cache_with_deps(
             # Use provided cache manager or create default one
             active_cache_manager = cache_manager or AsyncCacheManager()
 
-            # Generate cache key
-            cache_key = _generate_cache_key(func, args, kwargs)
-            if key_prefix:
-                cache_key = f"{key_prefix}:{cache_key}"
+            cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
 
-            # Check cache first
             cached_result = await active_cache_manager.get(cache_key)
-            if cached_result is not None:
-                # If cached result is an exception, re-raise it
-                if isinstance(cached_result, Exception):
-                    raise cached_result
-                return cached_result
+            cache_hit_result = _handle_cache_hit(cached_result)
+            if cache_hit_result is not None:
+                return cache_hit_result
 
             # Set up context for dependency tracking
-            old_dependencies = get_current_dependencies()
-            old_cache_key = current_cache_key()
-            old_cache_manager = get_cache_manager()
-            old_cache_ttl = get_cache_ttl()
-            clear_current_dependencies()
-            set_current_cache_key(cache_key)
-            set_cache_manager(active_cache_manager)
-            set_cache_ttl(None)  # Clear TTL context for function execution
+            old_context = _setup_context(cache_key, active_cache_manager)
 
+            result = None
+            exception = None
             try:
-                # Execute function
                 if asyncio.iscoroutinefunction(func):
                     result = await func(*args, **kwargs)
                 else:
                     result = func(*args, **kwargs)
-
-                # Get dependencies collected during execution
-                collected_dependencies = get_current_dependencies()
-
-                # Combine collected dependencies with additional dependencies
-                all_dependencies = set()
-                if collected_dependencies:
-                    all_dependencies.update(collected_dependencies)
-                if dependencies:
-                    all_dependencies.update(dependencies)
-
-                # Resolve TTL: current context takes precedence over decorator parameter
-                effective_ttl = get_cache_ttl() if get_cache_ttl() is not None else ttl
-
-                # Cache the result with dependencies
-                await active_cache_manager.set(
+            except Exception as exc:
+                exception = exc
+            finally:
+                await _cache_result_or_exception_async(
+                    active_cache_manager,
                     cache_key,
                     result,
-                    effective_ttl,
-                    all_dependencies if all_dependencies else None,
+                    exception,
+                    dependencies,
+                    ttl,
+                    cache_exception_types,
                 )
 
-                return result
-            except Exception as exc:
-                # Check if we should cache this exception type
-                should_cache_exception = cache_exception_types and any(
-                    isinstance(exc, exc_type) for exc_type in cache_exception_types
-                )
+                _restore_context(old_context)
 
-                if should_cache_exception:
-                    # Get dependencies collected during execution
-                    collected_dependencies = get_current_dependencies()
-
-                    # Combine collected dependencies with additional dependencies
-                    all_dependencies = set()
-                    if collected_dependencies:
-                        all_dependencies.update(collected_dependencies)
-                    if dependencies:
-                        all_dependencies.update(dependencies)
-
-                    # Resolve TTL: old context takes precedence over decorator parameter
-                    effective_ttl = old_cache_ttl if old_cache_ttl is not None else ttl
-
-                    # Cache the exception with dependencies
-                    await active_cache_manager.set(
-                        cache_key,
-                        exc,
-                        effective_ttl,
-                        all_dependencies if all_dependencies else None,
-                    )
-
-                # Re-raise the exception whether we cached it or not
-                raise
-            finally:
-                # Restore previous context
-                set_current_dependencies(old_dependencies)
-                set_current_cache_key(old_cache_key)
-                set_cache_manager(old_cache_manager)
-                set_cache_ttl(old_cache_ttl)
+            if exception is not None:
+                raise exception
+            return result
 
         return wrapper
 
