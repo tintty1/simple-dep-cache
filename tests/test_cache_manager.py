@@ -5,7 +5,7 @@ import fakeredis
 import pytest
 
 from simple_dep_cache.events import CacheEventType
-from simple_dep_cache.manager import CacheManager
+from simple_dep_cache.manager import CacheManager, get_default_cache_manager
 
 
 @pytest.fixture
@@ -306,3 +306,55 @@ class TestCacheManager:
 
         for _, timestamp in events:
             assert start_time <= timestamp <= end_time
+
+
+class TestDefaultCacheManager:
+    def test_get_default_cache_manager_returns_same_instance(self):
+        """Test that get_default_cache_manager returns the same instance on multiple calls."""
+        manager1 = get_default_cache_manager()
+        manager2 = get_default_cache_manager()
+
+        assert manager1 is manager2
+        assert isinstance(manager1, CacheManager)
+        assert manager1.prefix == "cache"
+
+    @patch("simple_dep_cache.manager.create_redis_client_from_config")
+    def test_get_default_cache_manager_creates_redis_client(self, mock_create_redis):
+        """Test that default manager creates Redis client from config."""
+        mock_redis = Mock()
+        mock_create_redis.return_value = mock_redis
+
+        # Reset the global state by accessing the module's globals
+        import simple_dep_cache.manager as manager_module
+
+        manager_module._default_sync_manager = None
+
+        manager = get_default_cache_manager()
+
+        assert manager.redis is mock_redis
+        mock_create_redis.assert_called_once()
+
+    def test_get_default_cache_manager_thread_safety(self):
+        """Test that default manager creation is thread-safe."""
+        import threading
+
+        import simple_dep_cache.manager as manager_module
+
+        # Reset the global state
+        manager_module._default_sync_manager = None
+
+        managers = []
+        barrier = threading.Barrier(5)
+
+        def create_manager():
+            barrier.wait()  # Ensure all threads start simultaneously
+            managers.append(get_default_cache_manager())
+
+        threads = [threading.Thread(target=create_manager) for _ in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        # All managers should be the same instance
+        assert len({id(manager) for manager in managers}) == 1

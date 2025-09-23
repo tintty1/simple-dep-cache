@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 
 import redis
@@ -12,6 +13,10 @@ from .events import CacheEvent, CacheEventType, EventEmitter
 from .types import CacheValue, get_serializer
 
 logger = logging.getLogger(__name__)
+
+_default_sync_manager = None
+_default_async_manager = None
+_manager_lock = threading.Lock()
 
 
 class CacheManager:
@@ -77,7 +82,6 @@ class CacheManager:
                     if current_ttl == -1 or (current_ttl != -2 and current_ttl < ttl):
                         self.redis.expire(dep_key, ttl)
 
-        # Emit set event
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.SET,
@@ -95,13 +99,11 @@ class CacheManager:
         value = self.redis.get(cache_key)
 
         if value is None:
-            # Emit cache miss event
             self.events.emit(
                 CacheEvent(event_type=CacheEventType.MISS, key=key, timestamp=time.time())
             )
             return None
 
-        # Emit cache hit event
         deserialized_value = self.serializer.load(value)
         self.events.emit(
             CacheEvent(
@@ -118,7 +120,6 @@ class CacheManager:
         cache_keys = [self._cache_key(key) for key in keys]
         count = self.redis.delete(*cache_keys) if cache_keys else 0
 
-        # Emit delete event for each key
         for key in keys:
             self.events.emit(
                 CacheEvent(
@@ -137,7 +138,6 @@ class CacheManager:
         keys = list(self.redis.scan_iter(match=pattern_key))
         count = self.redis.delete(*keys) if keys else 0
 
-        # Emit clear event
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.CLEAR,
@@ -233,7 +233,6 @@ class AsyncCacheManager:
                     if current_ttl == -1 or (current_ttl != -2 and current_ttl < ttl):
                         await self.redis.expire(dep_key, ttl)
 
-        # Emit set event
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.SET,
@@ -251,13 +250,11 @@ class AsyncCacheManager:
         value = await self.redis.get(cache_key)
 
         if value is None:
-            # Emit cache miss event
             self.events.emit(
                 CacheEvent(event_type=CacheEventType.MISS, key=key, timestamp=time.time())
             )
             return None
 
-        # Emit cache hit event
         deserialized_value = self.serializer.load(value)
         self.events.emit(
             CacheEvent(
@@ -274,7 +271,6 @@ class AsyncCacheManager:
         cache_keys = [self._cache_key(key) for key in keys]
         count = await self.redis.delete(*cache_keys) if cache_keys else 0
 
-        # Emit delete event for each key
         for key in keys:
             self.events.emit(
                 CacheEvent(
@@ -318,7 +314,6 @@ class AsyncCacheManager:
             count = await self.redis.delete(*cache_keys)
             await self.redis.delete(dep_key)
 
-        # Emit invalidate event
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.INVALIDATE,
@@ -341,3 +336,21 @@ class AsyncCacheManager:
     async def close(self) -> None:
         """Close the Redis connection."""
         await self.redis.aclose()
+
+
+def get_default_cache_manager() -> CacheManager:
+    global _default_sync_manager
+    if _default_sync_manager is None:
+        with _manager_lock:
+            if _default_sync_manager is None:
+                _default_sync_manager = CacheManager()
+    return _default_sync_manager
+
+
+def get_default_async_cache_manager() -> AsyncCacheManager:
+    global _default_async_manager
+    if _default_async_manager is None:
+        with _manager_lock:
+            if _default_async_manager is None:
+                _default_async_manager = AsyncCacheManager()
+    return _default_async_manager

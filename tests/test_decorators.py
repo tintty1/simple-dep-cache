@@ -64,6 +64,11 @@ class TestCacheWithDeps:
 
     @patch("simple_dep_cache.manager.create_redis_client_from_config")
     def test_default_cache_manager(self, mock_create_redis):
+        # Reset global manager state for clean test
+        import simple_dep_cache.manager as manager_module
+
+        manager_module._default_sync_manager = None
+
         mock_redis = fakeredis.FakeRedis(decode_responses=True)
         mock_create_redis.return_value = mock_redis
         call_count = 0
@@ -485,6 +490,11 @@ class TestAsyncCacheWithDeps:
     @pytest.mark.asyncio
     @patch("simple_dep_cache.manager.create_async_redis_client_from_config")
     async def test_default_cache_manager(self, mock_create_async_redis):
+        # Reset global manager state for clean test
+        import simple_dep_cache.manager as manager_module
+
+        manager_module._default_async_manager = None
+
         mock_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         mock_create_async_redis.return_value = mock_redis
         call_count = 0
