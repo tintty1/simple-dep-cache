@@ -9,6 +9,7 @@ import pytest_asyncio
 from simple_dep_cache.context import (
     add_dependency,
     get_current_dependencies,
+    set_cache_ttl,
     set_current_cache_key,
     set_current_dependencies,
 )
@@ -1070,3 +1071,223 @@ class TestCacheKeyGeneration:
         result3 = complex_function(model1, 20, name="test")
         assert result3 == "42_20_test"
         assert call_count == 2
+
+
+class TestTTLFunctionality:
+    def test_set_cache_ttl_sync(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager)
+        def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            # Function can set TTL during execution
+            set_cache_ttl(300)
+            return x * 2
+
+        # Initially no TTL set
+        result1 = expensive_function(5)
+        result2 = expensive_function(5)
+
+        assert result1 == 10
+        assert result2 == 10
+        assert call_count == 1
+
+        # Verify TTL was applied by checking Redis
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (5,), {}))
+        ttl = cache_manager.redis.ttl(cache_key)
+        assert ttl > 250  # Should be close to 300
+
+    def test_context_ttl_overrides_decorator_sync(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager, ttl=100)
+        def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            # Function sets TTL during execution - this should override decorator
+            set_cache_ttl(300)
+            return x * 2
+
+        result = expensive_function(5)
+
+        assert result == 10
+        assert call_count == 1
+
+        # Verify function TTL was used (300s), not decorator TTL (100s)
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (5,), {}))
+        ttl = cache_manager.redis.ttl(cache_key)
+        assert ttl > 250  # Should be close to 300, not 100
+
+    @pytest.mark.asyncio
+    async def test_set_cache_ttl_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(cache_manager=async_cache_manager)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            # Function can set TTL during execution
+            set_cache_ttl(300)
+            return x * 2
+
+        # Initially no TTL set
+        result1 = await expensive_function(5)
+        result2 = await expensive_function(5)
+
+        assert result1 == 10
+        assert result2 == 10
+        assert call_count == 1
+
+        # Verify TTL was applied by checking Redis
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = async_cache_manager._cache_key(
+            _generate_cache_key(expensive_function, (5,), {})
+        )
+        ttl = await async_cache_manager.redis.ttl(cache_key)
+        assert ttl > 250  # Should be close to 300
+
+    @pytest.mark.asyncio
+    async def test_context_ttl_overrides_decorator_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(cache_manager=async_cache_manager, ttl=100)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            # Function sets TTL during execution - this should override decorator
+            set_cache_ttl(300)
+            return x * 2
+
+        result = await expensive_function(5)
+
+        assert result == 10
+        assert call_count == 1
+
+        # Verify function TTL was used (300s), not decorator TTL (100s)
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = async_cache_manager._cache_key(
+            _generate_cache_key(expensive_function, (5,), {})
+        )
+        ttl = await async_cache_manager.redis.ttl(cache_key)
+        assert ttl > 250  # Should be close to 300, not 100
+
+    def test_decorator_ttl_when_no_context_sync(self, cache_manager):
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager, ttl=100)
+        def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # Clear any context TTL
+        set_cache_ttl(None)
+        result = expensive_function(8)
+
+        assert result == 16
+        assert call_count == 1
+
+        # Verify decorator TTL was used
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (8,), {}))
+        ttl = cache_manager.redis.ttl(cache_key)
+        assert 90 < ttl <= 100  # Should be close to 100
+
+    @pytest.mark.asyncio
+    async def test_decorator_ttl_when_no_context_async(self, async_cache_manager):
+        call_count = 0
+
+        @async_cache_with_deps(cache_manager=async_cache_manager, ttl=100)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # Clear any context TTL
+        set_cache_ttl(None)
+        result = await expensive_function(8)
+
+        assert result == 16
+        assert call_count == 1
+
+        # Verify decorator TTL was used
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = async_cache_manager._cache_key(
+            _generate_cache_key(expensive_function, (8,), {})
+        )
+        ttl = await async_cache_manager.redis.ttl(cache_key)
+        assert 90 < ttl <= 100  # Should be close to 100
+
+    def test_cache_ttl_context_isolation_sync(self, cache_manager):
+        """Test that decorated functions execute with clean TTL context."""
+        from simple_dep_cache.context import get_cache_ttl
+
+        call_count = 0
+
+        @cache_with_deps(cache_manager=cache_manager)
+        def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            # Verify TTL context is cleared inside function
+            assert get_cache_ttl() is None
+            return x * 2
+
+        # Set TTL before calling function
+        set_cache_ttl(200)
+        result = expensive_function(10)
+
+        assert result == 20
+        assert call_count == 1
+
+        # After function execution, context should be restored
+        assert get_cache_ttl() == 200
+
+        # Verify the cache was set with no TTL (function didn't set one)
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (10,), {}))
+        ttl = cache_manager.redis.ttl(cache_key)
+        assert ttl == -1  # No TTL set
+
+    @pytest.mark.asyncio
+    async def test_cache_ttl_context_isolation_async(self, async_cache_manager):
+        """Test that decorated functions execute with clean TTL context (async)."""
+        from simple_dep_cache.context import get_cache_ttl
+
+        call_count = 0
+
+        @async_cache_with_deps(cache_manager=async_cache_manager)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            # Verify TTL context is cleared inside function
+            assert get_cache_ttl() is None
+            return x * 2
+
+        # Set TTL before calling function
+        set_cache_ttl(250)
+        result = await expensive_function(10)
+
+        assert result == 20
+        assert call_count == 1
+
+        # After function execution, context should be restored
+        assert get_cache_ttl() == 250
+
+        # Verify the cache was set with no TTL (function didn't set one)
+        from simple_dep_cache.decorators import _generate_cache_key
+
+        cache_key = async_cache_manager._cache_key(
+            _generate_cache_key(expensive_function, (10,), {})
+        )
+        ttl = await async_cache_manager.redis.ttl(cache_key)
+        assert ttl == -1  # No TTL set

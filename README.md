@@ -59,6 +59,21 @@ def some_function():
     return "result"
 ```
 
+### Dynamic TTL Control
+
+Use `set_cache_ttl()` to control cache TTL during function execution:
+
+```python
+from simple_dep_cache import cache_with_deps, set_cache_ttl
+
+@cache_with_deps(ttl=300)
+def get_data():
+    set_cache_ttl(3600)    # Override decorator TTL
+    return fetch_data()
+```
+
+**Note:** `set_cache_ttl()` takes precedence over decorator `ttl` parameter.
+
 ### Custom Cache Key Generation
 
 For complex objects, you can control how cache keys are generated:
@@ -271,6 +286,7 @@ cache.invalidate_dependency("dep1")  # Invalidates all dependent caches
 - `add_dependency(dependency)` - Track dependency in current function
 - `current_cache_key()` - Get current cache key
 - `get_cache_manager()` - Get current cache manager instance
+- `set_cache_ttl(ttl)` - Set TTL for current function's cache entry
 
 **Managers:**
 

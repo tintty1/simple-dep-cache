@@ -11,9 +11,10 @@ _current_dependencies: ContextVar[None | set[str]] = ContextVar(
 _current_cache_manager: ContextVar["CacheManager | AsyncCacheManager | None"] = ContextVar(
     "current_cache_manager", default=None
 )
+_current_cache_ttl: ContextVar[int | None] = ContextVar("current_cache_ttl", default=None)
 
 
-def set_current_cache_key(key: str) -> None:
+def set_current_cache_key(key: None | str) -> None:
     """Set the current cache key in context."""
     _current_cache_key.set(key)
 
@@ -50,6 +51,16 @@ def get_cache_manager() -> "CacheManager | AsyncCacheManager | None":
     return _current_cache_manager.get()
 
 
-def set_cache_manager(cache_manager: "CacheManager | AsyncCacheManager") -> None:
+def set_cache_manager(cache_manager: "None | CacheManager | AsyncCacheManager") -> None:
     """Set the current cache manager in context."""
     _current_cache_manager.set(cache_manager)
+
+
+def set_cache_ttl(ttl: int | None) -> None:
+    """Set the current cache TTL in context."""
+    _current_cache_ttl.set(ttl)
+
+
+def get_cache_ttl() -> int | None:
+    """Get the current cache TTL from context."""
+    return _current_cache_ttl.get()

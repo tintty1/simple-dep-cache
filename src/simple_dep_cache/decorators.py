@@ -6,8 +6,12 @@ from functools import wraps
 from .config import config
 from .context import (
     clear_current_dependencies,
+    current_cache_key,
+    get_cache_manager,
+    get_cache_ttl,
     get_current_dependencies,
     set_cache_manager,
+    set_cache_ttl,
     set_current_cache_key,
     set_current_dependencies,
 )
@@ -104,9 +108,13 @@ def cache_with_deps(
 
             # Set up context for dependency tracking
             old_dependencies = get_current_dependencies()
+            old_cache_key = current_cache_key()
+            old_cache_manager = get_cache_manager()
+            old_cache_ttl = get_cache_ttl()
             clear_current_dependencies()
             set_current_cache_key(cache_key)
             set_cache_manager(active_cache_manager)
+            set_cache_ttl(None)  # Clear TTL context for function execution
 
             try:
                 # Execute function
@@ -122,11 +130,14 @@ def cache_with_deps(
                 if dependencies:
                     all_dependencies.update(dependencies)
 
+                # Resolve TTL: current context takes precedence over decorator parameter
+                effective_ttl = get_cache_ttl() if get_cache_ttl() is not None else ttl
+
                 # Cache the result with dependencies
                 active_cache_manager.set(
                     cache_key,
                     result,
-                    ttl,
+                    effective_ttl,
                     all_dependencies if all_dependencies else None,
                 )
 
@@ -148,11 +159,14 @@ def cache_with_deps(
                     if dependencies:
                         all_dependencies.update(dependencies)
 
+                    # Resolve TTL: old context takes precedence over decorator parameter
+                    effective_ttl = old_cache_ttl if old_cache_ttl is not None else ttl
+
                     # Cache the exception with dependencies
                     active_cache_manager.set(
                         cache_key,
                         exc,
-                        ttl,
+                        effective_ttl,
                         all_dependencies if all_dependencies else None,
                     )
 
@@ -161,7 +175,9 @@ def cache_with_deps(
             finally:
                 # Restore previous context
                 set_current_dependencies(old_dependencies)
-                set_current_cache_key(None)
+                set_current_cache_key(old_cache_key)
+                set_cache_manager(old_cache_manager)
+                set_cache_ttl(old_cache_ttl)
 
         return wrapper
 
@@ -216,9 +232,13 @@ def async_cache_with_deps(
 
             # Set up context for dependency tracking
             old_dependencies = get_current_dependencies()
+            old_cache_key = current_cache_key()
+            old_cache_manager = get_cache_manager()
+            old_cache_ttl = get_cache_ttl()
             clear_current_dependencies()
             set_current_cache_key(cache_key)
             set_cache_manager(active_cache_manager)
+            set_cache_ttl(None)  # Clear TTL context for function execution
 
             try:
                 # Execute function
@@ -237,11 +257,14 @@ def async_cache_with_deps(
                 if dependencies:
                     all_dependencies.update(dependencies)
 
+                # Resolve TTL: current context takes precedence over decorator parameter
+                effective_ttl = get_cache_ttl() if get_cache_ttl() is not None else ttl
+
                 # Cache the result with dependencies
                 await active_cache_manager.set(
                     cache_key,
                     result,
-                    ttl,
+                    effective_ttl,
                     all_dependencies if all_dependencies else None,
                 )
 
@@ -263,11 +286,14 @@ def async_cache_with_deps(
                     if dependencies:
                         all_dependencies.update(dependencies)
 
+                    # Resolve TTL: old context takes precedence over decorator parameter
+                    effective_ttl = old_cache_ttl if old_cache_ttl is not None else ttl
+
                     # Cache the exception with dependencies
                     await active_cache_manager.set(
                         cache_key,
                         exc,
-                        ttl,
+                        effective_ttl,
                         all_dependencies if all_dependencies else None,
                     )
 
@@ -276,7 +302,9 @@ def async_cache_with_deps(
             finally:
                 # Restore previous context
                 set_current_dependencies(old_dependencies)
-                set_current_cache_key(None)
+                set_current_cache_key(old_cache_key)
+                set_cache_manager(old_cache_manager)
+                set_cache_ttl(old_cache_ttl)
 
         return wrapper
 
