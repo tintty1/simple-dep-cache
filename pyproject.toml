@@ -39,6 +39,11 @@ dev = [
     "pre-commit>=4.3.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/tintty1/simple-dep-cache"
+Repository = "https://github.com/tintty1/simple-dep-cache"
+Documentation = "https://github.com/tintty1/simple-dep-cache"
+
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
 
