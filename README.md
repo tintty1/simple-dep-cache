@@ -268,10 +268,33 @@ cache.invalidate_dependency("dep1")  # Invalidates all dependent caches
 
 ## API Reference
 
+### Callback Support
+
+Monitor cache activity with callback functions:
+
+```python
+def cache_callback(**kwargs):
+    hit_miss = "HIT" if kwargs['is_hit'] else "MISS"
+    print(f"Cache {hit_miss} for {kwargs['func'].__name__}")
+
+@cache_with_deps(cache_manager=cache, callback=cache_callback)
+def expensive_function(x):
+    return x * 2
+
+# Async callbacks also supported
+@async_cache_with_deps(cache_manager=async_cache, callback=cache_callback)
+async def async_function(x):
+    return await some_async_operation(x)
+```
+
+**Callback parameters:** `func`, `cache_manager`, `args`, `kwargs`, `is_hit`, `cached_result`
+
+Callback exceptions are caught and logged.
+
 **Decorators:**
 
-- `@cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types)`
-- `@async_cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types)`
+- `@cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types, callback)`
+- `@async_cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types, callback)`
 
 **Parameters:**
 
@@ -280,6 +303,7 @@ cache.invalidate_dependency("dep1")  # Invalidates all dependent caches
 - `key_prefix`: Custom prefix for cache keys (optional)
 - `dependencies`: Additional static dependencies to track (optional)
 - `cache_exception_types`: List of exception types to cache (optional, no exceptions cached if None/empty)
+- `callback`: Callback function invoked on cache hit/miss (optional)
 
 **Context:**
 
