@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+import logging
+import traceback
 from collections.abc import Callable
 from functools import wraps
 from typing import Any, NamedTuple
@@ -22,15 +24,6 @@ from .manager import (
     get_default_async_cache_manager,
     get_default_cache_manager,
 )
-
-
-class _ContextState(NamedTuple):
-    """Represents the saved context state for restoration."""
-
-    dependencies: set | None
-    cache_key: str | None
-    cache_manager: CacheManager | AsyncCacheManager | None
-    cache_ttl: int | None
 
 
 class _ContextState(NamedTuple):
@@ -104,6 +97,78 @@ def _handle_cache_hit(cached_result: Any) -> Any:
             raise cached_result
         return cached_result
     return None
+
+
+def _invoke_callback(
+    callback: Callable | None,
+    func: Callable,
+    cache_manager: CacheManager | AsyncCacheManager,
+    args: tuple,
+    kwargs: dict,
+    is_hit: bool,
+    cached_result: Any = None,
+) -> None:
+    """Invoke cache hit/miss callback if provided."""
+    if callback:
+        try:
+            callback(
+                func=func,
+                cache_manager=cache_manager,
+                args=args,
+                kwargs=kwargs,
+                is_hit=is_hit,
+                cached_result=cached_result,
+            )
+        except Exception as e:
+            # Callback exceptions should not break main flow, but should be logged
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "Cache callback exception occurred. Function: %s, Error: %s",
+                getattr(func, "__name__", repr(func)),
+                str(e),
+            )
+            logger.debug("Callback exception traceback:\n%s", traceback.format_exc())
+
+
+async def _invoke_async_callback(
+    callback: Callable | None,
+    func: Callable,
+    cache_manager: CacheManager | AsyncCacheManager,
+    args: tuple,
+    kwargs: dict,
+    is_hit: bool,
+    cached_result: Any = None,
+) -> None:
+    """Invoke cache hit/miss callback if provided (supports async callbacks)."""
+    if callback:
+        try:
+            if asyncio.iscoroutinefunction(callback):
+                await callback(
+                    func=func,
+                    cache_manager=cache_manager,
+                    args=args,
+                    kwargs=kwargs,
+                    is_hit=is_hit,
+                    cached_result=cached_result,
+                )
+            else:
+                callback(
+                    func=func,
+                    cache_manager=cache_manager,
+                    args=args,
+                    kwargs=kwargs,
+                    is_hit=is_hit,
+                    cached_result=cached_result,
+                )
+        except Exception as e:
+            # Callback exceptions should not break main flow, but should be logged
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "Async cache callback exception occurred. Function: %s, Error: %s",
+                getattr(func, "__name__", repr(func)),
+                str(e),
+            )
+            logger.debug("Async callback exception traceback:\n%s", traceback.format_exc())
 
 
 def _setup_context(
@@ -227,6 +292,7 @@ def cache_with_deps(
     key_prefix: str | None = None,
     dependencies: set | None = None,
     cache_exception_types: list[type[Exception]] | None = None,
+    callback: Callable | None = None,
 ) -> Callable:
     """
     Decorator for caching function results with dependency tracking.
@@ -238,6 +304,9 @@ def cache_with_deps(
         dependencies: Additional dependencies to track (optional)
         cache_exception_types: List of exception types to cache.
             If None or empty, exceptions are not cached (optional)
+        callback: Callback function invoked on cache hit or miss.
+            Called with keyword arguments: func, cache_manager, args, kwargs, is_hit, cached_result
+            is_hit=True for cache hits, False for cache misses (optional)
     """
 
     def decorator(func: Callable) -> Callable:
@@ -253,9 +322,15 @@ def cache_with_deps(
             cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
 
             cached_result = active_cache_manager.get(cache_key)
-            cache_hit_result = _handle_cache_hit(cached_result)
-            if cache_hit_result is not None:
-                return cache_hit_result
+            if cached_result is not None:
+                _invoke_callback(
+                    callback, func, active_cache_manager, args, kwargs, True, cached_result
+                )
+                cache_hit_result = _handle_cache_hit(cached_result)
+                if cache_hit_result is not None:
+                    return cache_hit_result
+            else:
+                _invoke_callback(callback, func, active_cache_manager, args, kwargs, False, None)
 
             # Set up context for dependency tracking
             old_context = _setup_context(cache_key, active_cache_manager)
@@ -295,6 +370,7 @@ def async_cache_with_deps(
     key_prefix: str | None = None,
     dependencies: set | None = None,
     cache_exception_types: list[type[Exception]] | None = None,
+    callback: Callable | None = None,
 ) -> Callable:
     """
     Async decorator for caching function results with dependency tracking.
@@ -306,6 +382,10 @@ def async_cache_with_deps(
         dependencies: Additional dependencies to track (optional)
         cache_exception_types: List of exception types to cache.
             If None or empty, exceptions are not cached (optional)
+        callback: Callback function invoked on cache hit or miss.
+            Can be sync or async. Called with keyword arguments:
+                func, cache_manager, args, kwargs, is_hit, cached_result
+            is_hit=True for cache hits, False for cache misses (optional)
     """
 
     def decorator(func: Callable) -> Callable:
@@ -324,9 +404,17 @@ def async_cache_with_deps(
             cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
 
             cached_result = await active_cache_manager.get(cache_key)
-            cache_hit_result = _handle_cache_hit(cached_result)
-            if cache_hit_result is not None:
-                return cache_hit_result
+            if cached_result is not None:
+                await _invoke_async_callback(
+                    callback, func, active_cache_manager, args, kwargs, True, cached_result
+                )
+                cache_hit_result = _handle_cache_hit(cached_result)
+                if cache_hit_result is not None:
+                    return cache_hit_result
+            else:
+                await _invoke_async_callback(
+                    callback, func, active_cache_manager, args, kwargs, False, None
+                )
 
             # Set up context for dependency tracking
             old_context = _setup_context(cache_key, active_cache_manager)

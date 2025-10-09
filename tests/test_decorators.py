@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import patch
 
 import fakeredis
@@ -1301,3 +1302,378 @@ class TestTTLFunctionality:
         )
         ttl = await async_cache_manager.redis.ttl(cache_key)
         assert ttl == -1  # No TTL set
+
+
+class TestCallbackFunctionality:
+    def test_callback_on_cache_miss_and_hit_sync(self, cache_manager):
+        """Test callback is called correctly on cache miss and hit for sync decorator."""
+        call_count = 0
+        callback_calls = []
+
+        def test_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(cache_manager=cache_manager, callback=test_callback)
+        def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # First call - should be cache miss
+        result1 = expensive_function(5)
+        assert result1 == 10
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+        assert callback_calls[0]["cached_result"] is None
+        assert callback_calls[0]["args"] == (5,)
+
+        # Second call - should be cache hit
+        result2 = expensive_function(5)
+        assert result2 == 10
+        assert call_count == 1  # Should not increment
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+        assert callback_calls[1]["cached_result"] == 10
+        assert callback_calls[1]["args"] == (5,)
+
+    def test_callback_with_different_arguments_sync(self, cache_manager):
+        """Test callback behavior with different function arguments."""
+        call_count = 0
+        callback_calls = []
+
+        def test_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(cache_manager=cache_manager, callback=test_callback)
+        def expensive_function(x, multiplier=2):
+            nonlocal call_count
+            call_count += 1
+            return x * multiplier
+
+        # Different arguments should result in different cache entries
+        expensive_function(5, multiplier=2)  # miss
+        expensive_function(5, multiplier=3)  # miss
+        expensive_function(5, multiplier=2)  # hit
+        expensive_function(5, multiplier=3)  # hit
+
+        assert call_count == 2
+        assert len(callback_calls) == 4
+
+        # Check miss calls
+        assert callback_calls[0]["is_hit"] is False
+        assert callback_calls[0]["args"] == (5,)
+        assert callback_calls[0]["kwargs"] == {"multiplier": 2}
+
+        assert callback_calls[1]["is_hit"] is False
+        assert callback_calls[1]["args"] == (5,)
+        assert callback_calls[1]["kwargs"] == {"multiplier": 3}
+
+        # Check hit calls
+        assert callback_calls[2]["is_hit"] is True
+        assert callback_calls[3]["is_hit"] is True
+
+    def test_callback_exception_does_not_break_function_sync(self, cache_manager, caplog):
+        """Test that callback exceptions don't break the main function flow."""
+        call_count = 0
+
+        def failing_callback(**kwargs):
+            raise ValueError("Callback error")
+
+        @cache_with_deps(cache_manager=cache_manager, callback=failing_callback)
+        def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # Capture log messages at WARNING level
+        with caplog.at_level(logging.WARNING):
+            result1 = expensive_function(5)
+        assert result1 == 10
+        assert call_count == 1
+
+        # Check that warning was logged
+        assert "Cache callback exception occurred" in caplog.text
+        assert "Callback error" in caplog.text
+        caplog.clear()
+
+        # Second call should still hit cache (and log warning again)
+        with caplog.at_level(logging.WARNING):
+            result2 = expensive_function(5)
+        assert result2 == 10
+        assert call_count == 1
+
+        # Check that warning was logged again
+        assert "Cache callback exception occurred" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_callback_on_cache_miss_and_hit_async(self, async_cache_manager):
+        """Test callback is called correctly on cache miss and hit for async decorator."""
+        call_count = 0
+        callback_calls = []
+
+        def test_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @async_cache_with_deps(cache_manager=async_cache_manager, callback=test_callback)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # First call - should be cache miss
+        result1 = await expensive_function(5)
+        assert result1 == 10
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+        assert callback_calls[0]["cached_result"] is None
+
+        # Second call - should be cache hit
+        result2 = await expensive_function(5)
+        assert result2 == 10
+        assert call_count == 1  # Should not increment
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+        assert callback_calls[1]["cached_result"] == 10
+
+    @pytest.mark.asyncio
+    async def test_async_callback_support(self, async_cache_manager):
+        """Test that async callbacks are supported in async decorator."""
+        call_count = 0
+        callback_calls = []
+
+        async def async_test_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @async_cache_with_deps(cache_manager=async_cache_manager, callback=async_test_callback)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # First call - should be cache miss
+        result1 = await expensive_function(5)
+        assert result1 == 10
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+
+        # Second call - should be cache hit
+        result2 = await expensive_function(5)
+        assert result2 == 10
+        assert call_count == 1
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+
+    @pytest.mark.asyncio
+    async def test_callback_exception_does_not_break_function_async(
+        self, async_cache_manager, caplog
+    ):
+        """Test that callback exceptions don't break the main function flow (async)."""
+        call_count = 0
+
+        def failing_callback(**kwargs):
+            raise ValueError("Callback error")
+
+        @async_cache_with_deps(cache_manager=async_cache_manager, callback=failing_callback)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # Function should work normally despite callback failure
+        with caplog.at_level(logging.WARNING):
+            result1 = await expensive_function(5)
+        assert result1 == 10
+        assert call_count == 1
+
+        # Check that warning was logged
+        assert "Async cache callback exception occurred" in caplog.text
+        assert "Callback error" in caplog.text
+        caplog.clear()
+
+        # Second call should still hit cache (and log warning again)
+        with caplog.at_level(logging.WARNING):
+            result2 = await expensive_function(5)
+        assert result2 == 10
+        assert call_count == 1
+
+        # Check that warning was logged again
+        assert "Async cache callback exception occurred" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_callback_exception_does_not_break_function(
+        self, async_cache_manager, caplog
+    ):
+        """Test that async callback exceptions don't break the main function flow."""
+        call_count = 0
+
+        async def failing_async_callback(**kwargs):
+            raise ValueError("Async callback error")
+
+        @async_cache_with_deps(cache_manager=async_cache_manager, callback=failing_async_callback)
+        async def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        # Function should work normally despite async callback failure
+        with caplog.at_level(logging.WARNING):
+            result1 = await expensive_function(5)
+        assert result1 == 10
+        assert call_count == 1
+
+        # Check that warning was logged
+        assert "Async cache callback exception occurred" in caplog.text
+        assert "Async callback error" in caplog.text
+        caplog.clear()
+
+        # Second call should still hit cache (and log warning again)
+        with caplog.at_level(logging.WARNING):
+            result2 = await expensive_function(5)
+        assert result2 == 10
+        assert call_count == 1
+
+        # Check that warning was logged again
+        assert "Async cache callback exception occurred" in caplog.text
+
+    def test_callback_with_dependencies_sync(self, cache_manager):
+        """Test callback works correctly with dependency tracking."""
+        call_count = 0
+        callback_calls = []
+
+        def test_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(
+            cache_manager=cache_manager, dependencies={"static_dep"}, callback=test_callback
+        )
+        def expensive_function(x):
+            nonlocal call_count
+            call_count += 1
+            add_dependency("dynamic_dep")
+            return x * 2
+
+        # First call - miss
+        result1 = expensive_function(5)
+        assert result1 == 10
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+
+        # Second call - hit
+        result2 = expensive_function(5)
+        assert result2 == 10
+        assert call_count == 1
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+
+        # Invalidate dependency - should cause miss
+        cache_manager.invalidate_dependency("static_dep")
+        result3 = expensive_function(5)
+        assert result3 == 10
+        assert call_count == 2
+        assert len(callback_calls) == 3
+        assert callback_calls[2]["is_hit"] is False
+
+    def test_callback_with_exception_caching_sync(self, cache_manager):
+        """Test callback behavior with exception caching."""
+        call_count = 0
+        callback_calls = []
+
+        def test_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(
+            cache_manager=cache_manager, cache_exception_types=[ValueError], callback=test_callback
+        )
+        def failing_function(x):
+            nonlocal call_count
+            call_count += 1
+            if x < 0:
+                raise ValueError(f"Negative value: {x}")
+            return x * 2
+
+        # First call with exception - should cache the exception
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            failing_function(-1)
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+
+        # Second call with same exception - should hit cache
+        with pytest.raises(ValueError, match="Negative value: -1"):
+            failing_function(-1)
+        assert call_count == 1  # Should not increment
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+        # cached_result should be the serialized exception
+        assert callback_calls[1]["cached_result"] is not None
+
+    def test_callback_parameters_sync(self, cache_manager):
+        """Test that callback receives all expected parameters."""
+        callback_calls = []
+
+        def detailed_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(cache_manager=cache_manager, callback=detailed_callback)
+        def test_function(x, y=10):
+            return x + y
+
+        test_function(5, y=20)
+
+        assert len(callback_calls) == 1
+        callback_kwargs = callback_calls[0]
+
+        # Check all expected parameters are present
+        assert "func" in callback_kwargs
+        assert "cache_manager" in callback_kwargs
+        assert "args" in callback_kwargs
+        assert "kwargs" in callback_kwargs
+        assert "is_hit" in callback_kwargs
+        assert "cached_result" in callback_kwargs
+
+        # Function should be a callable with the same name as the original function
+        assert callable(callback_kwargs["func"])
+        assert callback_kwargs["func"].__name__ == test_function.__name__
+        assert callback_kwargs["cache_manager"] == cache_manager
+        assert callback_kwargs["args"] == (5,)
+        assert callback_kwargs["kwargs"] == {"y": 20}
+        assert callback_kwargs["is_hit"] is False
+        assert callback_kwargs["cached_result"] is None
+
+    @pytest.mark.asyncio
+    async def test_callback_parameters_async(self, async_cache_manager):
+        """Test that async callback receives all expected parameters."""
+        callback_calls = []
+
+        async def detailed_async_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @async_cache_with_deps(cache_manager=async_cache_manager, callback=detailed_async_callback)
+        async def test_function(x, y=10):
+            return x + y
+
+        await test_function(5, y=20)
+
+        assert len(callback_calls) == 1
+        callback_kwargs = callback_calls[0]
+
+        # Check all expected parameters are present
+        assert "func" in callback_kwargs
+        assert "cache_manager" in callback_kwargs
+        assert "args" in callback_kwargs
+        assert "kwargs" in callback_kwargs
+        assert "is_hit" in callback_kwargs
+        assert "cached_result" in callback_kwargs
+
+        # Function should be a callable with the same name as the original function
+        assert callable(callback_kwargs["func"])
+        assert callback_kwargs["func"].__name__ == test_function.__name__
+        assert callback_kwargs["cache_manager"] == async_cache_manager
+        assert callback_kwargs["args"] == (5,)
+        assert callback_kwargs["kwargs"] == {"y": 20}
+        assert callback_kwargs["is_hit"] is False
+        assert callback_kwargs["cached_result"] is None
