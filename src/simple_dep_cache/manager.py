@@ -2,15 +2,10 @@ import logging
 import threading
 import time
 
-import redis
-import redis.asyncio as async_redis
-
-from .config import (
-    create_async_redis_client_from_config,
-    create_redis_client_from_config,
-)
+from .backends import AsyncCacheBackend, CacheBackend
 from .events import CacheEvent, CacheEventType, EventEmitter
-from .types import CacheValue, get_serializer
+from .redis_backends import AsyncRedisCacheBackend, RedisCacheBackend
+from .types import CacheValue
 
 logger = logging.getLogger(__name__)
 
@@ -20,39 +15,33 @@ _manager_lock = threading.Lock()
 
 
 class CacheManager:
-    """Synchronous Redis-based cache manager with dependency tracking."""
+    """Cache manager with dependency tracking using pluggable backend."""
 
-    def __init__(self, redis_client: redis.Redis | None = None, prefix: str = "cache"):
-        if redis_client is None:
-            from .config import config
+    def __init__(
+        self, backend: CacheBackend | None = None, *, redis_client=None, prefix: str = "cache"
+    ):
+        # Backwards compatibility: if redis_client is provided, create backend
+        if backend is None and redis_client is not None:
+            backend = RedisCacheBackend(redis_client=redis_client, prefix=prefix)
+        elif backend is None:
+            backend = RedisCacheBackend(prefix=prefix)
 
-            self._redis = None
-            if config.cache_enabled:
-                logger.info(
-                    "Creating Redis client from environment configuration. "
-                    "Provide a custom redis_client parameter to override."
-                )
-                self._redis = create_redis_client_from_config()
-        else:
-            self._redis = redis_client
+        self.backend = backend
         self.prefix = prefix
         self.events = EventEmitter()
-        self.serializer = get_serializer()
 
     @property
-    def redis(self) -> redis.Redis:
-        """Get the Redis client, raising an error if not configured."""
-        if self._redis is None:
-            raise RuntimeError("Cache is disabled or redis client is not configured.")
-        return self._redis
+    def redis(self):
+        """Backwards compatibility property to access redis client."""
+        return self.backend.redis
 
     def _cache_key(self, key: str) -> str:
-        """Generate prefixed cache key."""
-        return f"{self.prefix}:{key}"
+        """Backwards compatibility method."""
+        return self.backend._cache_key(key)
 
     def _deps_key(self, dependency: str) -> str:
-        """Generate dependency tracking key."""
-        return f"{self.prefix}:deps:{dependency}"
+        """Backwards compatibility method."""
+        return self.backend._deps_key(dependency)
 
     def set(
         self,
@@ -62,25 +51,7 @@ class CacheManager:
         dependencies: set[str] | None = None,
     ) -> None:
         """Set a cache value with optional TTL and dependencies."""
-        cache_key = self._cache_key(key)
-        serialized_value = self.serializer.dump(value)
-
-        if ttl:
-            self.redis.setex(cache_key, ttl, serialized_value)
-        else:
-            self.redis.set(cache_key, serialized_value)
-
-        if dependencies:
-            for dep in dependencies:
-                dep_key = self._deps_key(dep)
-                self.redis.sadd(dep_key, cache_key)
-                if ttl:
-                    current_ttl = self.redis.ttl(dep_key)
-                    # Ensure dependency tracking key lives at least as long as cache entries
-                    # current_ttl: -1 = no expiration, -2 = doesn't exist, >0 = remaining seconds
-                    # Set/extend TTL if: key is persistent OR key has shorter TTL than ours
-                    if current_ttl == -1 or (current_ttl != -2 and current_ttl < ttl):
-                        self.redis.expire(dep_key, ttl)
+        self.backend.set(key, value, ttl, dependencies)
 
         self.events.emit(
             CacheEvent(
@@ -95,8 +66,7 @@ class CacheManager:
 
     def get(self, key: str) -> CacheValue | None:
         """Get a cache value."""
-        cache_key = self._cache_key(key)
-        value = self.redis.get(cache_key)
+        value = self.backend.get(key)
 
         if value is None:
             self.events.emit(
@@ -104,21 +74,19 @@ class CacheManager:
             )
             return None
 
-        deserialized_value = self.serializer.load(value)
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.HIT,
                 key=key,
                 timestamp=time.time(),
-                value=deserialized_value,
+                value=value,
             )
         )
-        return deserialized_value
+        return value
 
     def delete(self, *keys: str) -> int:
         """Delete cache entries."""
-        cache_keys = [self._cache_key(key) for key in keys]
-        count = self.redis.delete(*cache_keys) if cache_keys else 0
+        count = self.backend.delete(*keys)
 
         for key in keys:
             self.events.emit(
@@ -134,9 +102,7 @@ class CacheManager:
 
     def clear(self, pattern: str = "*") -> int:
         """Clear cache entries matching pattern."""
-        pattern_key = self._cache_key(pattern)
-        keys = list(self.redis.scan_iter(match=pattern_key))
-        count = self.redis.delete(*keys) if keys else 0
+        count = self.backend.clear(pattern)
 
         self.events.emit(
             CacheEvent(
@@ -151,14 +117,7 @@ class CacheManager:
 
     def invalidate_dependency(self, dependency: str) -> int:
         """Invalidate all cache entries that depend on the given dependency."""
-        dep_key = self._deps_key(dependency)
-        cache_keys = self.redis.smembers(dep_key)
-
-        if not cache_keys:
-            count = 0
-        else:
-            count = self.redis.delete(*cache_keys)
-            self.redis.delete(dep_key)
+        count = self.backend.invalidate_dependency(dependency)
 
         # Emit invalidate event
         self.events.emit(
@@ -174,36 +133,41 @@ class CacheManager:
 
     def exists(self, key: str) -> bool:
         """Check if a cache key exists."""
-        return bool(self.redis.exists(self._cache_key(key)))
+        return self.backend.exists(key)
 
     def ttl(self, key: str) -> int:
         """Get TTL for a cache key."""
-        return self.redis.ttl(self._cache_key(key))
+        return self.backend.ttl(key)
 
 
 class AsyncCacheManager:
-    """Asynchronous Redis-based cache manager with dependency tracking."""
+    """Asynchronous cache manager with dependency tracking using pluggable backend."""
 
-    def __init__(self, redis_client: async_redis.Redis | None = None, prefix: str = "cache"):
-        if redis_client is None:
-            logger.info(
-                "Creating async Redis client from environment configuration. "
-                "Provide a custom redis_client parameter to override."
-            )
-            self.redis = create_async_redis_client_from_config()
-        else:
-            self.redis = redis_client
+    def __init__(
+        self, backend: AsyncCacheBackend | None = None, *, redis_client=None, prefix: str = "cache"
+    ):
+        # Backwards compatibility: if redis_client is provided, create backend
+        if backend is None and redis_client is not None:
+            backend = AsyncRedisCacheBackend(redis_client=redis_client, prefix=prefix)
+        elif backend is None:
+            backend = AsyncRedisCacheBackend(prefix=prefix)
+
+        self.backend = backend
         self.prefix = prefix
         self.events = EventEmitter()
-        self.serializer = get_serializer()
+
+    @property
+    def redis(self):
+        """Backwards compatibility property to access redis client."""
+        return self.backend.redis
 
     def _cache_key(self, key: str) -> str:
-        """Generate prefixed cache key."""
-        return f"{self.prefix}:{key}"
+        """Backwards compatibility method."""
+        return self.backend._cache_key(key)
 
     def _deps_key(self, dependency: str) -> str:
-        """Generate dependency tracking key."""
-        return f"{self.prefix}:deps:{dependency}"
+        """Backwards compatibility method."""
+        return self.backend._deps_key(dependency)
 
     async def set(
         self,
@@ -213,25 +177,7 @@ class AsyncCacheManager:
         dependencies: set[str] | None = None,
     ) -> None:
         """Set a cache value with optional TTL and dependencies."""
-        cache_key = self._cache_key(key)
-        serialized_value = self.serializer.dump(value)
-
-        if ttl:
-            await self.redis.setex(cache_key, ttl, serialized_value)
-        else:
-            await self.redis.set(cache_key, serialized_value)
-
-        if dependencies:
-            for dep in dependencies:
-                dep_key = self._deps_key(dep)
-                await self.redis.sadd(dep_key, cache_key)
-                if ttl:
-                    current_ttl = await self.redis.ttl(dep_key)
-                    # Ensure dependency tracking key lives at least as long as cache entries
-                    # current_ttl: -1 = no expiration, -2 = doesn't exist, >0 = remaining seconds
-                    # Set/extend TTL if: key is persistent OR key has shorter TTL than ours
-                    if current_ttl == -1 or (current_ttl != -2 and current_ttl < ttl):
-                        await self.redis.expire(dep_key, ttl)
+        await self.backend.set(key, value, ttl, dependencies)
 
         self.events.emit(
             CacheEvent(
@@ -246,8 +192,7 @@ class AsyncCacheManager:
 
     async def get(self, key: str) -> CacheValue | None:
         """Get a cache value."""
-        cache_key = self._cache_key(key)
-        value = await self.redis.get(cache_key)
+        value = await self.backend.get(key)
 
         if value is None:
             self.events.emit(
@@ -255,21 +200,19 @@ class AsyncCacheManager:
             )
             return None
 
-        deserialized_value = self.serializer.load(value)
         self.events.emit(
             CacheEvent(
                 event_type=CacheEventType.HIT,
                 key=key,
                 timestamp=time.time(),
-                value=deserialized_value,
+                value=value,
             )
         )
-        return deserialized_value
+        return value
 
     async def delete(self, *keys: str) -> int:
         """Delete cache entries."""
-        cache_keys = [self._cache_key(key) for key in keys]
-        count = await self.redis.delete(*cache_keys) if cache_keys else 0
+        count = await self.backend.delete(*keys)
 
         for key in keys:
             self.events.emit(
@@ -285,11 +228,7 @@ class AsyncCacheManager:
 
     async def clear(self, pattern: str = "*") -> int:
         """Clear cache entries matching pattern."""
-        pattern_key = self._cache_key(pattern)
-        keys = []
-        async for key in self.redis.scan_iter(match=pattern_key):
-            keys.append(key)
-        count = await self.redis.delete(*keys) if keys else 0
+        count = await self.backend.clear(pattern)
 
         # Emit clear event
         self.events.emit(
@@ -305,14 +244,7 @@ class AsyncCacheManager:
 
     async def invalidate_dependency(self, dependency: str) -> int:
         """Invalidate all cache entries that depend on the given dependency."""
-        dep_key = self._deps_key(dependency)
-        cache_keys = await self.redis.smembers(dep_key)
-
-        if not cache_keys:
-            count = 0
-        else:
-            count = await self.redis.delete(*cache_keys)
-            await self.redis.delete(dep_key)
+        count = await self.backend.invalidate_dependency(dependency)
 
         self.events.emit(
             CacheEvent(
@@ -327,15 +259,15 @@ class AsyncCacheManager:
 
     async def exists(self, key: str) -> bool:
         """Check if a cache key exists."""
-        return bool(await self.redis.exists(self._cache_key(key)))
+        return await self.backend.exists(key)
 
     async def ttl(self, key: str) -> int:
         """Get TTL for a cache key."""
-        return await self.redis.ttl(self._cache_key(key))
+        return await self.backend.ttl(key)
 
     async def close(self) -> None:
-        """Close the Redis connection."""
-        await self.redis.aclose()
+        """Close the backend connection."""
+        await self.backend.close()
 
 
 def get_default_cache_manager() -> CacheManager:
