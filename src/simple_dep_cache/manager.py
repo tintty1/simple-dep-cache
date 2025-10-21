@@ -6,7 +6,6 @@ import warnings
 
 from .backends import AsyncCacheBackend, CacheBackend
 from .events import CacheEvent, CacheEventType, EventEmitter
-from .redis_backends import AsyncRedisCacheBackend, RedisCacheBackend
 from .types import CacheValue
 
 logger = logging.getLogger(__name__)
@@ -20,34 +19,25 @@ class CacheManager:
 
     def __init__(
         self,
-        backend: CacheBackend | AsyncCacheBackend | None = None,
+        backend: CacheBackend | None = None,
         *,
-        redis_client=None,
+        async_backend: AsyncCacheBackend | None = None,
         prefix: str = "cache",
     ):
-        # Determine if we should create sync or async backend
-        if backend is None:
-            if redis_client is not None:
-                # Auto-detect based on redis_client type
-                import redis.asyncio as async_redis
+        # Determine which backend to use
+        if backend is not None and async_backend is not None:
+            raise ValueError("Cannot specify both 'backend' and 'async_backend'")
+        elif async_backend is not None:
+            self.backend = async_backend
+            self._is_async = True
+        elif backend is not None:
+            self.backend = backend
+            self._is_async = False
+        else:
+            raise ValueError("Must specify either 'backend' or 'async_backend'")
 
-                if isinstance(redis_client, async_redis.Redis):
-                    backend = AsyncRedisCacheBackend(redis_client=redis_client, prefix=prefix)
-                else:
-                    backend = RedisCacheBackend(redis_client=redis_client, prefix=prefix)
-            else:
-                # Default to sync backend for backwards compatibility
-                backend = RedisCacheBackend(prefix=prefix)
-
-        self.backend = backend
-        self._is_async = isinstance(backend, AsyncCacheBackend)
         self.prefix = prefix
         self.events = EventEmitter()
-
-    @property
-    def redis(self):
-        """Backwards compatibility property to access redis client."""
-        return self.backend.redis
 
     def _cache_key(self, key: str) -> str:
         """Backwards compatibility method."""
@@ -352,75 +342,21 @@ class CacheManager:
             )
 
 
-# Backwards compatibility: Deprecated AsyncCacheManager with old API
-class AsyncCacheManager:
-    """Deprecated: Use CacheManager with async backend and 'await manager.aset()' instead."""
-
-    def __init__(self, backend=None, *, redis_client=None, prefix="cache"):
-        warnings.warn(
-            "AsyncCacheManager is deprecated. Use CacheManager with async backend and 'await manager.aset()' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # For AsyncCacheManager, default to async backend if none provided
-        if backend is None and redis_client is None:
-            backend = AsyncRedisCacheBackend(prefix=prefix)
-        # Create the actual unified manager
-        self._manager = CacheManager(backend=backend, redis_client=redis_client, prefix=prefix)
-
-    # Delegate all attributes to the internal manager
-    def __getattr__(self, name):
-        return getattr(self._manager, name)
-
-    # Override async methods to provide old API (without 'a' prefix)
-    async def set(self, key, value, ttl=None, dependencies=None):
-        """Deprecated: Use CacheManager with await manager.aset() instead."""
-        return await self._manager.aset(key, value, ttl, dependencies)
-
-    async def get(self, key):
-        """Deprecated: Use CacheManager with await manager.aget() instead."""
-        return await self._manager.aget(key)
-
-    async def delete(self, *keys):
-        """Deprecated: Use CacheManager with await manager.adelete() instead."""
-        return await self._manager.adelete(*keys)
-
-    async def clear(self, pattern="*"):
-        """Deprecated: Use CacheManager with await manager.aclear() instead."""
-        return await self._manager.aclear(pattern)
-
-    async def invalidate_dependency(self, dependency):
-        """Deprecated: Use CacheManager with await manager.ainvalidate_dependency() instead."""
-        return await self._manager.ainvalidate_dependency(dependency)
-
-    async def exists(self, key):
-        """Deprecated: Use CacheManager with await manager.aexists() instead."""
-        return await self._manager.aexists(key)
-
-    async def ttl(self, key):
-        """Deprecated: Use CacheManager with await manager.attl() instead."""
-        return await self._manager.attl(key)
-
-    async def close(self):
-        """Deprecated: Use CacheManager with await manager.aclose() instead."""
-        return await self._manager.aclose()
-
-
-def get_default_cache_manager() -> CacheManager:
-    """Get the default cache manager (sync backend)."""
+def get_default_cache_manager(backend: CacheBackend) -> CacheManager:
+    """Get the default cache manager with specified backend."""
     global _default_manager
     if _default_manager is None:
         with _manager_lock:
             if _default_manager is None:
-                _default_manager = CacheManager()
+                _default_manager = CacheManager(backend=backend)
     return _default_manager
 
 
-def get_default_async_cache_manager() -> CacheManager:
-    """Get the default cache manager with async backend."""
+def get_default_async_cache_manager(async_backend: AsyncCacheBackend) -> CacheManager:
+    """Get the default cache manager with specified async backend."""
     global _default_manager
     if _default_manager is None:
         with _manager_lock:
             if _default_manager is None:
-                _default_manager = CacheManager(backend=AsyncRedisCacheBackend())
+                _default_manager = CacheManager(async_backend=async_backend)
     return _default_manager

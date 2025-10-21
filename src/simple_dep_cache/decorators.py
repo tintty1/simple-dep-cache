@@ -18,11 +18,7 @@ from .context import (
     set_current_cache_key,
     set_current_dependencies,
 )
-from .manager import (
-    CacheManager,
-    get_default_async_cache_manager,
-    get_default_cache_manager,
-)
+from .manager import CacheManager
 
 
 class _ContextState(NamedTuple):
@@ -313,8 +309,13 @@ def cache_with_deps(
             if not config.cache_enabled:
                 return func(*args, **kwargs)
 
-            # Use provided cache manager or get default one
-            active_cache_manager = cache_manager or get_default_cache_manager()
+            # Require cache manager to be provided
+            if cache_manager is None:
+                raise ValueError(
+                    "cache_manager must be provided to cache_with_deps decorator. "
+                    "Use create_cache_manager() to create one."
+                )
+            active_cache_manager = cache_manager
 
             cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
 
@@ -395,8 +396,13 @@ def async_cache_with_deps(
                 else:
                     return func(*args, **kwargs)
 
-            # Use provided cache manager or get default one
-            active_cache_manager = cache_manager or get_default_async_cache_manager()
+            # Require cache manager to be provided
+            if cache_manager is None:
+                raise ValueError(
+                    "cache_manager must be provided to async_cache_with_deps decorator. "
+                    "Use create_async_cache_manager() to create one."
+                )
+            active_cache_manager = cache_manager
 
             cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
 

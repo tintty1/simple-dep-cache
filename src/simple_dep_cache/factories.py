@@ -48,7 +48,7 @@ def create_cache_manager(
     prefix: str = "cache",
 ) -> CacheManager:
     """
-    Create a cache manager with Redis backend.
+    Create a cache manager with sync backend.
 
     Args:
         backend: Custom cache backend (takes precedence over redis_client)
@@ -56,7 +56,7 @@ def create_cache_manager(
         prefix: Cache key prefix (default: "cache")
 
     Returns:
-        CacheManager instance
+        CacheManager instance with sync backend
     """
     if backend is None:
         backend = create_redis_backend(redis_client=redis_client, prefix=prefix)
@@ -70,7 +70,7 @@ def create_async_cache_manager(
     prefix: str = "cache",
 ) -> CacheManager:
     """
-    Create a cache manager with async Redis backend.
+    Create a cache manager with async backend.
 
     Args:
         backend: Custom async cache backend (takes precedence over redis_client)
@@ -83,23 +83,4 @@ def create_async_cache_manager(
     if backend is None:
         backend = create_async_redis_backend(redis_client=redis_client, prefix=prefix)
 
-    return CacheManager(backend=backend)
-
-
-def create_unified_cache_manager(
-    backend: CacheBackend | AsyncCacheBackend | None = None,
-    redis_client: redis.Redis | async_redis.Redis | None = None,
-    prefix: str = "cache",
-) -> CacheManager:
-    """
-    Create a unified cache manager that works with both sync and async backends.
-
-    Args:
-        backend: Custom cache backend (sync or async, takes precedence over redis_client)
-        redis_client: Custom Redis client (sync or async, used if backend not provided)
-        prefix: Cache key prefix (default: "cache")
-
-    Returns:
-        Unified CacheManager instance
-    """
-    return CacheManager(backend=backend, redis_client=redis_client, prefix=prefix)
+    return CacheManager(async_backend=backend)
