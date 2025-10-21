@@ -7,6 +7,7 @@ from .factories import (
     create_async_redis_backend,
     create_cache_manager,
     create_redis_backend,
+    create_unified_cache_manager,
 )
 from .manager import AsyncCacheManager, CacheManager
 from .redis_backends import AsyncRedisCacheBackend, RedisCacheBackend
@@ -14,7 +15,7 @@ from .types import BaseSerializer, CacheValue, JSONSerializer
 
 __all__ = [
     "CacheManager",
-    "AsyncCacheManager",
+    "AsyncCacheManager",  # Deprecated
     "CacheBackend",
     "AsyncCacheBackend",
     "RedisCacheBackend",
@@ -33,6 +34,7 @@ __all__ = [
     "JSONSerializer",
     "create_cache_manager",
     "create_async_cache_manager",
+    "create_unified_cache_manager",
     "create_redis_backend",
     "create_async_redis_backend",
 ]

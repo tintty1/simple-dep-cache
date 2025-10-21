@@ -19,7 +19,6 @@ from .context import (
     set_current_dependencies,
 )
 from .manager import (
-    AsyncCacheManager,
     CacheManager,
     get_default_async_cache_manager,
     get_default_cache_manager,
@@ -31,7 +30,7 @@ class _ContextState(NamedTuple):
 
     dependencies: set | None
     cache_key: str | None
-    cache_manager: CacheManager | AsyncCacheManager | None
+    cache_manager: CacheManager | None
     cache_ttl: int | None
 
 
@@ -102,7 +101,7 @@ def _handle_cache_hit(cached_result: Any) -> Any:
 def _invoke_callback(
     callback: Callable | None,
     func: Callable,
-    cache_manager: CacheManager | AsyncCacheManager,
+    cache_manager: CacheManager,
     args: tuple,
     kwargs: dict,
     is_hit: bool,
@@ -133,7 +132,7 @@ def _invoke_callback(
 async def _invoke_async_callback(
     callback: Callable | None,
     func: Callable,
-    cache_manager: CacheManager | AsyncCacheManager,
+    cache_manager: CacheManager,
     args: tuple,
     kwargs: dict,
     is_hit: bool,
@@ -171,9 +170,7 @@ async def _invoke_async_callback(
             logger.debug("Async callback exception traceback:\n%s", traceback.format_exc())
 
 
-def _setup_context(
-    cache_key: str, cache_manager: CacheManager | AsyncCacheManager
-) -> _ContextState:
+def _setup_context(cache_key: str, cache_manager: CacheManager) -> _ContextState:
     """Set up context for dependency tracking and return old state."""
     old_state = _ContextState(
         dependencies=get_current_dependencies(),
@@ -256,7 +253,7 @@ def _cache_result_or_exception_sync(
 
 
 async def _cache_result_or_exception_async(
-    cache_manager: AsyncCacheManager,
+    cache_manager: CacheManager,
     cache_key: str,
     result: Any,
     exception: Exception | None,
@@ -365,7 +362,7 @@ def cache_with_deps(
 
 def async_cache_with_deps(
     *,
-    cache_manager: AsyncCacheManager | None = None,
+    cache_manager: CacheManager | None = None,
     ttl: int | None = None,
     key_prefix: str | None = None,
     dependencies: set | None = None,
