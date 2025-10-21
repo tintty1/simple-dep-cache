@@ -121,7 +121,7 @@ def create_cache_manager(
     async_backend = None
     if create_async_backend:
         async_backend = create_async_backend_from_config(cache_config)
-    return CacheManager(backend=backend, async_backend=async_backend)
+    return CacheManager(cache_config, backend=backend, async_backend=async_backend)
 
 
 def create_async_cache_manager(
@@ -138,7 +138,7 @@ def create_async_cache_manager(
     """
     cache_config = config or RedisConfig()
     async_backend = create_async_backend_from_config(cache_config)
-    return CacheManager(async_backend=async_backend)
+    return CacheManager(cache_config, async_backend=async_backend)
 
 
 def create_redis_client_from_config(

@@ -5,6 +5,7 @@ import time
 import warnings
 
 from .backends import AsyncCacheBackend, CacheBackend
+from .config import ConfigBase
 from .events import CacheEvent, CacheEventType, EventEmitter
 from .types import CacheValue
 
@@ -19,22 +20,29 @@ class CacheManager:
 
     def __init__(
         self,
+        config: ConfigBase,
         backend: CacheBackend | None = None,
-        *,
         async_backend: AsyncCacheBackend | None = None,
-        prefix: str = "cache",
     ):
+        self.config = config
         # At least one backend must be provided
         if backend is None and async_backend is None:
             raise ValueError("Must specify either 'backend', 'async_backend', or both")
 
         self.backend = backend
         self.async_backend = async_backend
-        self.prefix = prefix
         self.events = EventEmitter()
 
+    @property
+    def prefix(self) -> str:
+        return self.config.prefix
+
+    @property
+    def name(self) -> str:
+        # use prefix as name
+        return self.prefix
+
     def _cache_key(self, key: str) -> str:
-        """Backwards compatibility method."""
         if self.backend is not None:
             return self.backend._cache_key(key)
         elif self.async_backend is not None:
@@ -43,7 +51,6 @@ class CacheManager:
             raise RuntimeError("No backend available.")
 
     def _deps_key(self, dependency: str) -> str:
-        """Backwards compatibility method."""
         if self.backend is not None:
             return self.backend._deps_key(dependency)
         elif self.async_backend is not None:
@@ -87,7 +94,8 @@ class CacheManager:
             await self.async_backend.set(key, value, ttl, dependencies)
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'aset()'. Consider using sync method 'set()' for better performance.",
+                "Using sync backend with async method 'aset()'. "
+                "Consider using sync method 'set()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -135,7 +143,8 @@ class CacheManager:
             value = await self.async_backend.get(key)
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'aget()'. Consider using sync method 'get()' for better performance.",
+                "Using sync backend with async method 'aget()'. "
+                "Consider using sync method 'get()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -184,7 +193,8 @@ class CacheManager:
             count = await self.async_backend.delete(*keys)
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'adelete()'. Consider using sync method 'delete()' for better performance.",
+                "Using sync backend with async method 'adelete()'. "
+                "Consider using sync method 'delete()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -228,7 +238,8 @@ class CacheManager:
             count = await self.async_backend.clear(pattern)
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'aclear()'. Consider using sync method 'clear()' for better performance.",
+                "Using sync backend with async method 'aclear()'. "
+                "Consider using sync method 'clear()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -269,12 +280,14 @@ class CacheManager:
         return count
 
     async def ainvalidate_dependency(self, dependency: str) -> int:
-        """Async version of invalidate_dependency - uses async backend, falls back to sync backend."""
+        """Async version of invalidate_dependency - uses async backend, falls back to sync
+        backend."""
         if self.async_backend is not None:
             count = await self.async_backend.invalidate_dependency(dependency)
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'ainvalidate_dependency()'. Consider using sync method 'invalidate_dependency()' for better performance.",
+                "Using sync backend with async method 'ainvalidate_dependency()'. "
+                "Consider using sync method 'invalidate_dependency()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -306,7 +319,8 @@ class CacheManager:
             return await self.async_backend.exists(key)
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'aexists()'. Consider using sync method 'exists()' for better performance.",
+                "Using sync backend with async method 'aexists()'. "
+                "Consider using sync method 'exists()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -327,7 +341,8 @@ class CacheManager:
             return await self.async_backend.ttl(key)
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'attl()'. Consider using sync method 'ttl()' for better performance.",
+                "Using sync backend with async method 'attl()'. "
+                "Consider using sync method 'ttl()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -341,7 +356,8 @@ class CacheManager:
             await self.async_backend.close()
         elif self.backend is not None:
             warnings.warn(
-                "Using sync backend with async method 'aclose()'. No connection to close for sync backends.",
+                "Using sync backend with async method 'aclose()'. "
+                "No connection to close for sync backends.",
                 UserWarning,
                 stacklevel=2,
             )
