@@ -11,8 +11,37 @@ from .types import CacheValue
 
 logger = logging.getLogger(__name__)
 
-_default_manager = None
 _manager_lock = threading.Lock()
+
+_managers = {}
+
+
+def get_or_create_cache_manager(
+    name: str | None = None,
+    config: ConfigBase | None = None,
+    backend: CacheBackend | None = None,
+    async_backend: AsyncCacheBackend | None = None,
+    create_async_backend: bool = False,
+) -> "CacheManager":
+    """Get or create a CacheManager for the given configuration."""
+    global _managers
+
+    if name is None:
+        if config is None:
+            raise ValueError("Either 'name' or 'config' must be provided.")
+        name = config.prefix
+
+    with _manager_lock:
+        if name not in _managers:
+            from .factories import create_cache_manager
+
+            _managers[name] = create_cache_manager(
+                config=config,
+                backend=backend,
+                async_backend=async_backend,
+                create_async_backend=create_async_backend,
+            )
+        return _managers[name]
 
 
 class CacheManager:

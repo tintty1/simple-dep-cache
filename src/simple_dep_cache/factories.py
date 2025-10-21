@@ -103,42 +103,31 @@ def create_async_redis_backend(
 
 
 def create_cache_manager(
+    name: str | None = None,
     config: ConfigBase | None = None,
+    backend: CacheBackend | None = None,
+    async_backend: AsyncCacheBackend | None = None,
     create_async_backend: bool = False,
 ) -> CacheManager:
     """
     Create a cache manager with sync backend.
 
     Args:
+        name: Name of the cache manager (optional)
         config: Configuration object (optional, uses RedisConfig if not provided)
-        create_async_backend: Whether to create an async backend (default: False)
+        create_async_backend: Whether to create an async backend as well (default: False)
+        backend: Custom sync cache backend (optional)
+        async_backend: Custom async cache backend (optional)
 
     Returns:
         CacheManager instance with sync backend
     """
     cache_config = config or RedisConfig()
-    backend = create_backend_from_config(cache_config)
-    async_backend = None
-    if create_async_backend:
+    if backend is None:
+        backend = create_backend_from_config(cache_config)
+    if async_backend is None and create_async_backend:
         async_backend = create_async_backend_from_config(cache_config)
-    return CacheManager(cache_config, backend=backend, async_backend=async_backend)
-
-
-def create_async_cache_manager(
-    config: ConfigBase | None = None,
-) -> CacheManager:
-    """
-    Create a cache manager with async backend.
-
-    Args:
-        config: Configuration object (optional, uses RedisConfig if not provided)
-
-    Returns:
-        CacheManager instance with async backend
-    """
-    cache_config = config or RedisConfig()
-    async_backend = create_async_backend_from_config(cache_config)
-    return CacheManager(cache_config, async_backend=async_backend)
+    return CacheManager(cache_config, name=name, backend=backend, async_backend=async_backend)
 
 
 def create_redis_client_from_config(
