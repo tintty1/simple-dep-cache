@@ -24,28 +24,32 @@ class CacheManager:
         async_backend: AsyncCacheBackend | None = None,
         prefix: str = "cache",
     ):
-        # Determine which backend to use
-        if backend is not None and async_backend is not None:
-            raise ValueError("Cannot specify both 'backend' and 'async_backend'")
-        elif async_backend is not None:
-            self.backend = async_backend
-            self._is_async = True
-        elif backend is not None:
-            self.backend = backend
-            self._is_async = False
-        else:
-            raise ValueError("Must specify either 'backend' or 'async_backend'")
+        # At least one backend must be provided
+        if backend is None and async_backend is None:
+            raise ValueError("Must specify either 'backend', 'async_backend', or both")
 
+        self.backend = backend
+        self.async_backend = async_backend
         self.prefix = prefix
         self.events = EventEmitter()
 
     def _cache_key(self, key: str) -> str:
         """Backwards compatibility method."""
-        return self.backend._cache_key(key)
+        if self.backend is not None:
+            return self.backend._cache_key(key)
+        elif self.async_backend is not None:
+            return self.async_backend._cache_key(key)
+        else:
+            raise RuntimeError("No backend available.")
 
     def _deps_key(self, dependency: str) -> str:
         """Backwards compatibility method."""
-        return self.backend._deps_key(dependency)
+        if self.backend is not None:
+            return self.backend._deps_key(dependency)
+        elif self.async_backend is not None:
+            return self.async_backend._deps_key(dependency)
+        else:
+            raise RuntimeError("No backend available.")
 
     def set(
         self,
@@ -55,11 +59,8 @@ class CacheManager:
         dependencies: set[str] | None = None,
     ) -> None:
         """Set a cache value with optional TTL and dependencies."""
-        if self._is_async:
-            raise RuntimeError(
-                "Cannot use sync 'set()' method with async backend. "
-                "Use 'await manager.aset()' instead."
-            )
+        if self.backend is None:
+            raise RuntimeError("No sync backend available. Use 'await manager.aset()' instead.")
 
         self.backend.set(key, value, ttl, dependencies)
 
@@ -81,16 +82,18 @@ class CacheManager:
         ttl: int | None = None,
         dependencies: builtins.set[str] | None = None,
     ) -> None:
-        """Async version of set - works with async backends, falls back to sync."""
-        if self._is_async:
-            await self.backend.set(key, value, ttl, dependencies)
-        else:
+        """Async version of set - uses async backend, falls back to sync backend."""
+        if self.async_backend is not None:
+            await self.async_backend.set(key, value, ttl, dependencies)
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'aset()'. Consider using sync method 'set()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
             self.backend.set(key, value, ttl, dependencies)
+        else:
+            raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
         self.events.emit(
             CacheEvent(
@@ -105,10 +108,8 @@ class CacheManager:
 
     def get(self, key: str) -> CacheValue | None:
         """Get a cache value."""
-        if self._is_async:
-            raise RuntimeError(
-                "Cannot use sync 'get()' method with async backend. Use 'await manager.aget()' instead."
-            )
+        if self.backend is None:
+            raise RuntimeError("No sync backend available. Use 'await manager.aget()' instead.")
 
         value = self.backend.get(key)
 
@@ -129,16 +130,18 @@ class CacheManager:
         return value
 
     async def aget(self, key: str) -> CacheValue | None:
-        """Async version of get - works with async backends, falls back to sync."""
-        if self._is_async:
-            value = await self.backend.get(key)
-        else:
+        """Async version of get - uses async backend, falls back to sync backend."""
+        if self.async_backend is not None:
+            value = await self.async_backend.get(key)
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'aget()'. Consider using sync method 'get()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
             value = self.backend.get(key)
+        else:
+            raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
         if value is None:
             self.events.emit(
@@ -158,10 +161,8 @@ class CacheManager:
 
     def delete(self, *keys: str) -> int:
         """Delete cache entries."""
-        if self._is_async:
-            raise RuntimeError(
-                "Cannot use sync 'delete()' method with async backend. Use 'await manager.adelete()' instead."
-            )
+        if self.backend is None:
+            raise RuntimeError("No sync backend available. Use 'await manager.adelete()' instead.")
 
         count = self.backend.delete(*keys)
 
@@ -178,16 +179,18 @@ class CacheManager:
         return count
 
     async def adelete(self, *keys: str) -> int:
-        """Async version of delete - works with async backends, falls back to sync."""
-        if self._is_async:
-            count = await self.backend.delete(*keys)
-        else:
+        """Async version of delete - uses async backend, falls back to sync backend."""
+        if self.async_backend is not None:
+            count = await self.async_backend.delete(*keys)
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'adelete()'. Consider using sync method 'delete()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
             count = self.backend.delete(*keys)
+        else:
+            raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
         for key in keys:
             self.events.emit(
@@ -203,10 +206,8 @@ class CacheManager:
 
     def clear(self, pattern: str = "*") -> int:
         """Clear cache entries matching pattern."""
-        if self._is_async:
-            raise RuntimeError(
-                "Cannot use sync 'clear()' method with async backend. Use 'await manager.aclear()' instead."
-            )
+        if self.backend is None:
+            raise RuntimeError("No sync backend available. Use 'await manager.aclear()' instead.")
 
         count = self.backend.clear(pattern)
 
@@ -223,15 +224,17 @@ class CacheManager:
 
     async def aclear(self, pattern: str = "*") -> int:
         """Async version of clear - works with async backends, falls back to sync."""
-        if self._is_async:
-            count = await self.backend.clear(pattern)
-        else:
+        if self.async_backend is not None:
+            count = await self.async_backend.clear(pattern)
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'aclear()'. Consider using sync method 'clear()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
             count = self.backend.clear(pattern)
+        else:
+            raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
         self.events.emit(
             CacheEvent(
@@ -246,9 +249,9 @@ class CacheManager:
 
     def invalidate_dependency(self, dependency: str) -> int:
         """Invalidate all cache entries that depend on the given dependency."""
-        if self._is_async:
+        if self.backend is None:
             raise RuntimeError(
-                "Cannot use sync 'invalidate_dependency()' method with async backend. Use 'await manager.ainvalidate_dependency()' instead."
+                "No sync backend available. Use 'await manager.ainvalidate_dependency()' instead."
             )
 
         count = self.backend.invalidate_dependency(dependency)
@@ -266,16 +269,18 @@ class CacheManager:
         return count
 
     async def ainvalidate_dependency(self, dependency: str) -> int:
-        """Async version of invalidate_dependency - works with async backends, falls back to sync."""
-        if self._is_async:
-            count = await self.backend.invalidate_dependency(dependency)
-        else:
+        """Async version of invalidate_dependency - uses async backend, falls back to sync backend."""
+        if self.async_backend is not None:
+            count = await self.async_backend.invalidate_dependency(dependency)
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'ainvalidate_dependency()'. Consider using sync method 'invalidate_dependency()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
             count = self.backend.invalidate_dependency(dependency)
+        else:
+            raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
         self.events.emit(
             CacheEvent(
@@ -290,73 +295,78 @@ class CacheManager:
 
     def exists(self, key: str) -> bool:
         """Check if a cache key exists."""
-        if self._is_async:
-            raise RuntimeError(
-                "Cannot use sync 'exists()' method with async backend. Use 'await manager.aexists()' instead."
-            )
+        if self.backend is None:
+            raise RuntimeError("No sync backend available. Use 'await manager.aexists()' instead.")
 
         return self.backend.exists(key)
 
     async def aexists(self, key: str) -> bool:
-        """Async version of exists - works with async backends, falls back to sync."""
-        if self._is_async:
-            return await self.backend.exists(key)
-        else:
+        """Async version of exists - uses async backend, falls back to sync backend."""
+        if self.async_backend is not None:
+            return await self.async_backend.exists(key)
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'aexists()'. Consider using sync method 'exists()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
             return self.backend.exists(key)
+        else:
+            raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
     def ttl(self, key: str) -> int:
         """Get TTL for a cache key."""
-        if self._is_async:
-            raise RuntimeError(
-                "Cannot use sync 'ttl()' method with async backend. Use 'await manager.attl()' instead."
-            )
+        if self.backend is None:
+            raise RuntimeError("No sync backend available. Use 'await manager.attl()' instead.")
 
         return self.backend.ttl(key)
 
     async def attl(self, key: str) -> int:
-        """Async version of ttl - works with async backends, falls back to sync."""
-        if self._is_async:
-            return await self.backend.ttl(key)
-        else:
+        """Async version of ttl - uses async backend, falls back to sync backend."""
+        if self.async_backend is not None:
+            return await self.async_backend.ttl(key)
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'attl()'. Consider using sync method 'ttl()' for better performance.",
                 UserWarning,
                 stacklevel=2,
             )
             return self.backend.ttl(key)
+        else:
+            raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
     async def aclose(self) -> None:
         """Close the backend connection."""
-        if self._is_async:
-            await self.backend.close()
-        else:
+        if self.async_backend is not None:
+            await self.async_backend.close()
+        elif self.backend is not None:
             warnings.warn(
                 "Using sync backend with async method 'aclose()'. No connection to close for sync backends.",
                 UserWarning,
                 stacklevel=2,
             )
+        # No error needed for aclose - it's fine if there's no backend to close
 
 
-def get_default_cache_manager(backend: CacheBackend) -> CacheManager:
-    """Get the default cache manager with specified backend."""
+def get_default_cache_manager(
+    backend: CacheBackend, async_backend: AsyncCacheBackend | None = None
+) -> CacheManager:
+    """Get the default cache manager with specified backend(s)."""
     global _default_manager
     if _default_manager is None:
         with _manager_lock:
             if _default_manager is None:
-                _default_manager = CacheManager(backend=backend)
+                _default_manager = CacheManager(backend=backend, async_backend=async_backend)
     return _default_manager
 
 
-def get_default_async_cache_manager(async_backend: AsyncCacheBackend) -> CacheManager:
-    """Get the default cache manager with specified async backend."""
+def get_default_async_cache_manager(
+    async_backend: AsyncCacheBackend, backend: CacheBackend | None = None
+) -> CacheManager:
+    """Get the default cache manager with specified backend(s)."""
     global _default_manager
     if _default_manager is None:
         with _manager_lock:
             if _default_manager is None:
-                _default_manager = CacheManager(async_backend=async_backend)
+                _default_manager = CacheManager(backend=backend, async_backend=async_backend)
     return _default_manager
