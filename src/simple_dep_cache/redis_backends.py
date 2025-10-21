@@ -9,8 +9,8 @@ import redis
 import redis.asyncio as async_redis
 
 from .backends import AsyncCacheBackend, CacheBackend
-from .config import (
-    RedisConfig,
+from .config import RedisConfig
+from .factories import (
     create_async_redis_client_from_config,
     create_redis_client_from_config,
 )
@@ -24,25 +24,14 @@ class RedisCacheBackend(CacheBackend):
 
     def __init__(
         self,
+        config: RedisConfig,
         redis_client: redis.Redis | None = None,
-        redis_config: RedisConfig | None = None,
-        prefix: str = "cache",
     ):
-        super().__init__(prefix)
+        super().__init__(config)
         if redis_client is None:
-            from .config import config
-
-            # Use provided redis_config or fall back to global config
-            redis_cfg = redis_config or config.redis
-
             self._redis = None
             if config.cache_enabled:
-                logger.info(
-                    "Creating Redis client from %s configuration. "
-                    "Provide a custom redis_client parameter to override.",
-                    "provided redis_config" if redis_config else "environment",
-                )
-                self._redis = create_redis_client_from_config(redis_cfg)
+                self._redis = create_redis_client_from_config(config)
         else:
             self._redis = redis_client
         self.serializer = get_serializer()
@@ -130,23 +119,12 @@ class AsyncRedisCacheBackend(AsyncCacheBackend):
 
     def __init__(
         self,
+        config: RedisConfig,
         redis_client: async_redis.Redis | None = None,
-        redis_config: RedisConfig | None = None,
-        prefix: str = "cache",
     ):
-        super().__init__(prefix)
+        super().__init__(config)
         if redis_client is None:
-            from .config import config
-
-            # Use provided redis_config or fall back to global config
-            redis_cfg = redis_config or config.redis
-
-            logger.info(
-                "Creating async Redis client from %s configuration. "
-                "Provide a custom redis_client parameter to override.",
-                "provided redis_config" if redis_config else "environment",
-            )
-            self.redis = create_async_redis_client_from_config(redis_cfg)
+            self.redis = create_async_redis_client_from_config(config)
         else:
             self.redis = redis_client
         self.serializer = get_serializer()

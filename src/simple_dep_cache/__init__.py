@@ -1,13 +1,21 @@
 from .backends import AsyncCacheBackend, CacheBackend
-from .config import Config, ConfigBase, RedisConfig, config
+from .config import (
+    ConfigBase,
+    RedisConfig,
+    config,
+)
 from .context import add_dependency, current_cache_key, set_cache_ttl
 from .decorators import async_cache_with_deps, cache_with_deps
 from .events import CacheEvent, CacheEventType, StatsCollector, create_logger_callback
 from .factories import (
+    create_async_backend_from_config,
     create_async_cache_manager,
     create_async_redis_backend,
+    create_async_redis_client_from_config,
+    create_backend_from_config,
     create_cache_manager,
     create_redis_backend,
+    create_redis_client_from_config,
 )
 from .manager import CacheManager
 from .redis_backends import AsyncRedisCacheBackend, RedisCacheBackend
@@ -19,7 +27,6 @@ __all__ = [
     "AsyncCacheBackend",
     "RedisCacheBackend",
     "AsyncRedisCacheBackend",
-    "Config",
     "ConfigBase",
     "RedisConfig",
     "config",
@@ -39,4 +46,8 @@ __all__ = [
     "create_async_cache_manager",
     "create_redis_backend",
     "create_async_redis_backend",
+    "create_redis_client_from_config",
+    "create_async_redis_client_from_config",
+    "create_backend_from_config",
+    "create_async_backend_from_config",
 ]

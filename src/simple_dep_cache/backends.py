@@ -4,14 +4,15 @@ Cache backend interfaces and implementations for different storage systems.
 
 from abc import ABC, abstractmethod
 
+from .config import ConfigBase
 from .types import CacheValue
 
 
 class CacheBackend(ABC):
     """Abstract base class for cache backends."""
 
-    def __init__(self, prefix: str = "cache"):
-        self.prefix = prefix
+    def __init__(self, config: ConfigBase):
+        self.prefix = config.prefix
 
     def _cache_key(self, key: str) -> str:
         """Generate prefixed cache key."""
@@ -66,8 +67,8 @@ class CacheBackend(ABC):
 class AsyncCacheBackend(ABC):
     """Abstract base class for async cache backends."""
 
-    def __init__(self, prefix: str = "cache"):
-        self.prefix = prefix
+    def __init__(self, config: ConfigBase):
+        self.prefix = config.prefix
 
     def _cache_key(self, key: str) -> str:
         """Generate prefixed cache key."""

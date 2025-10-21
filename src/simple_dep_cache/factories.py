@@ -2,19 +2,75 @@
 Factory functions for creating cache backends and managers.
 """
 
+import importlib
+from typing import TYPE_CHECKING
+
 import redis
 import redis.asyncio as async_redis
 
 from .backends import AsyncCacheBackend, CacheBackend
-from .config import RedisConfig
+from .config import ConfigBase, RedisConfig
 from .manager import CacheManager
 from .redis_backends import AsyncRedisCacheBackend, RedisCacheBackend
 
+if TYPE_CHECKING:
+    import redis
+    import redis.asyncio
+
+
+def load_class(class_path: str):
+    """Load a class from a string like 'package.module.ClassName'."""
+    module_path, class_name = class_path.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
+    return cls
+
+
+def create_backend_from_config(config: ConfigBase) -> CacheBackend:
+    """
+    Create a cache backend from configuration.
+
+    Args:
+        config: Configuration object
+
+    Returns:
+        CacheBackend instance based on configuration
+    """
+    if config.cache_backend_class:
+        klass = load_class(config.cache_backend_class)
+        return klass(config)
+    else:
+        # Default to Redis backend
+        if isinstance(config, RedisConfig):
+            return create_redis_backend(config)
+        else:
+            raise ValueError("Provide a custom cache_backend_class for non-Redis backend.")
+
+
+def create_async_backend_from_config(config: ConfigBase) -> AsyncCacheBackend:
+    """
+    Create an async cache backend from configuration.
+
+    Args:
+        config: Configuration object
+
+    Returns:
+        AsyncCacheBackend instance based on configuration
+    """
+    if config.async_cache_backend_class:
+        klass = load_class(config.async_cache_backend_class)
+        return klass(config)
+    else:
+        # Default to Redis backend
+        if isinstance(config, RedisConfig):
+            return create_async_redis_backend(config)
+        else:
+            raise ValueError("Provide a custom async_cache_backend_class for non-Redis backend.")
+
 
 def create_redis_backend(
+    config: RedisConfig,
     redis_client: redis.Redis | None = None,
-    redis_config: RedisConfig | None = None,
-    prefix: str = "cache",
 ) -> RedisCacheBackend:
     """
     Create a Redis cache backend.
@@ -22,18 +78,16 @@ def create_redis_backend(
     Args:
         redis_client: Custom Redis client (optional)
         redis_config: Custom Redis configuration (optional)
-        prefix: Cache key prefix (default: "cache")
 
     Returns:
         RedisCacheBackend instance
     """
-    return RedisCacheBackend(redis_client=redis_client, redis_config=redis_config, prefix=prefix)
+    return RedisCacheBackend(config, redis_client=redis_client)
 
 
 def create_async_redis_backend(
+    config: RedisConfig,
     redis_client: async_redis.Redis | None = None,
-    redis_config: RedisConfig | None = None,
-    prefix: str = "cache",
 ) -> AsyncRedisCacheBackend:
     """
     Create an async Redis cache backend.
@@ -41,55 +95,121 @@ def create_async_redis_backend(
     Args:
         redis_client: Custom async Redis client (optional)
         redis_config: Custom Redis configuration (optional)
-        prefix: Cache key prefix (default: "cache")
 
     Returns:
         AsyncRedisCacheBackend instance
     """
-    return AsyncRedisCacheBackend(
-        redis_client=redis_client, redis_config=redis_config, prefix=prefix
-    )
+    return AsyncRedisCacheBackend(config, redis_client=redis_client)
 
 
 def create_cache_manager(
-    backend: CacheBackend | None = None,
-    redis_client: redis.Redis | None = None,
-    prefix: str = "cache",
+    config: ConfigBase | None = None,
+    create_async_backend: bool = False,
 ) -> CacheManager:
     """
     Create a cache manager with sync backend.
 
     Args:
-        backend: Custom cache backend (takes precedence over redis_client)
-        redis_client: Custom Redis client (used if backend not provided)
-        prefix: Cache key prefix (default: "cache")
+        config: Configuration object (optional, uses RedisConfig if not provided)
+        create_async_backend: Whether to create an async backend (default: False)
 
     Returns:
         CacheManager instance with sync backend
     """
-    if backend is None:
-        backend = create_redis_backend(redis_client=redis_client, prefix=prefix)
-
-    return CacheManager(backend=backend)
+    cache_config = config or RedisConfig()
+    backend = create_backend_from_config(cache_config)
+    async_backend = None
+    if create_async_backend:
+        async_backend = create_async_backend_from_config(cache_config)
+    return CacheManager(backend=backend, async_backend=async_backend)
 
 
 def create_async_cache_manager(
-    backend: AsyncCacheBackend | None = None,
-    redis_client: async_redis.Redis | None = None,
-    prefix: str = "cache",
+    config: ConfigBase | None = None,
 ) -> CacheManager:
     """
     Create a cache manager with async backend.
 
     Args:
-        backend: Custom async cache backend (takes precedence over redis_client)
-        redis_client: Custom async Redis client (used if backend not provided)
-        prefix: Cache key prefix (default: "cache")
+        config: Configuration object (optional, uses RedisConfig if not provided)
 
     Returns:
         CacheManager instance with async backend
     """
-    if backend is None:
-        backend = create_async_redis_backend(redis_client=redis_client, prefix=prefix)
+    cache_config = config or RedisConfig()
+    async_backend = create_async_backend_from_config(cache_config)
+    return CacheManager(async_backend=async_backend)
 
-    return CacheManager(async_backend=backend)
+
+def create_redis_client_from_config(
+    redis_config: RedisConfig | None = None,
+) -> "redis.Redis":
+    """Create a Redis client from configuration settings."""
+    from .config import RedisConfig
+
+    cfg = redis_config or RedisConfig()
+
+    if cfg.url:
+        return redis.Redis.from_url(
+            cfg.url,
+            decode_responses=True,
+            socket_timeout=cfg.socket_timeout,
+            max_connections=cfg.max_connections,
+        )
+
+    connection_kwargs = {
+        "host": cfg.host,
+        "port": cfg.port,
+        "db": cfg.db,
+        "decode_responses": True,
+        "ssl": cfg.ssl,
+        "max_connections": cfg.max_connections,
+    }
+
+    if cfg.password:
+        connection_kwargs["password"] = cfg.password
+
+    if cfg.username:
+        connection_kwargs["username"] = cfg.username
+
+    if cfg.socket_timeout:
+        connection_kwargs["socket_timeout"] = cfg.socket_timeout
+
+    return redis.Redis(**connection_kwargs)
+
+
+def create_async_redis_client_from_config(
+    redis_config: RedisConfig | None = None,
+) -> "redis.asyncio.Redis":
+    """Create an async Redis client from configuration settings."""
+    from .config import RedisConfig
+
+    cfg = redis_config or RedisConfig()
+
+    if cfg.url:
+        return async_redis.Redis.from_url(
+            cfg.url,
+            decode_responses=True,
+            socket_timeout=cfg.socket_timeout,
+            max_connections=cfg.max_connections,
+        )
+
+    connection_kwargs = {
+        "host": cfg.host,
+        "port": cfg.port,
+        "db": cfg.db,
+        "decode_responses": True,
+        "ssl": cfg.ssl,
+        "max_connections": cfg.max_connections,
+    }
+
+    if cfg.password:
+        connection_kwargs["password"] = cfg.password
+
+    if cfg.username:
+        connection_kwargs["username"] = cfg.username
+
+    if cfg.socket_timeout:
+        connection_kwargs["socket_timeout"] = cfg.socket_timeout
+
+    return async_redis.Redis(**connection_kwargs)

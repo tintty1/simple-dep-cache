@@ -1,9 +1,5 @@
 import os
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    import redis
-    import redis.asyncio
+from typing import Any
 
 
 def _str_to_bool(value: str | bool) -> bool:
@@ -16,7 +12,7 @@ def _str_to_bool(value: str | bool) -> bool:
     return False
 
 
-def _str_to_int(value: str, default: int) -> int:
+def _str_to_int(value: str, default: int | None = None) -> None | int:
     """Convert string environment variable to integer."""
     try:
         return int(value)
@@ -24,7 +20,7 @@ def _str_to_int(value: str, default: int) -> int:
         return default
 
 
-def _str_to_float(value: str, default: float) -> float:
+def _str_to_float(value: str, default: float | None = None) -> None | float:
     """Convert string environment variable to float."""
     try:
         return float(value)
@@ -39,6 +35,9 @@ class ConfigBase:
         self._cache_enabled: bool | None = None
         self._callback_error_silent: bool | None = None
         self._serializer_class: str | None = None
+        self._prefix: str | None = None
+        self._cache_backend_class: str | None = None
+        self._async_cache_backend_class: str | None = None
 
     @property
     def cache_enabled(self) -> bool:
@@ -85,11 +84,65 @@ class ConfigBase:
         """Set serializer class name."""
         self._serializer_class = value
 
+    @property
+    def prefix(self) -> str:
+        """Cache key prefix. Default: cache
+        Environment variable: DEP_CACHE_PREFIX
+        """
+        if self._prefix is not None:
+            return self._prefix
+        return os.getenv("DEP_CACHE_PREFIX", "cache")
+
+    @prefix.setter
+    def prefix(self, value: str):
+        """Set cache key prefix."""
+        self._prefix = value
+
+    @property
+    def cache_backend_class(self) -> str | None:
+        """Cache backend class to use. Default: simple_dep_cache.redis_backends.RedisCacheBackend
+
+        Environment variable: DEP_CACHE_BACKEND_CLASS
+
+        Example: mypackage.CustomBackend
+        The class must inherit from simple_dep_cache.backends.CacheBackend
+        """
+        if self._cache_backend_class is not None:
+            return self._cache_backend_class
+        return os.getenv("DEP_CACHE_BACKEND_CLASS")
+
+    @cache_backend_class.setter
+    def cache_backend_class(self, value: str | None):
+        """Set cache backend class name."""
+        self._cache_backend_class = value
+
+    @property
+    def async_cache_backend_class(self) -> str | None:
+        """Async cache backend class to use.
+        Default: simple_dep_cache.redis_backends.AsyncRedisCacheBackend
+
+        Environment variable: DEP_CACHE_ASYNC_BACKEND_CLASS
+
+        Example: mypackage.CustomAsyncBackend
+        The class must inherit from simple_dep_cache.backends.AsyncCacheBackend
+        """
+        if self._async_cache_backend_class is not None:
+            return self._async_cache_backend_class
+        return os.getenv("DEP_CACHE_ASYNC_BACKEND_CLASS")
+
+    @async_cache_backend_class.setter
+    def async_cache_backend_class(self, value: str | None):
+        """Set async cache backend class name."""
+        self._async_cache_backend_class = value
+
     def reset(self) -> None:
         """Reset all configuration values to defaults (environment variables)."""
         self._cache_enabled = None
         self._callback_error_silent = None
         self._serializer_class = None
+        self._prefix = None
+        self._cache_backend_class = None
+        self._async_cache_backend_class = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return current configuration as dictionary."""
@@ -97,13 +150,17 @@ class ConfigBase:
             "cache_enabled": self.cache_enabled,
             "callback_error_silent": self.callback_error_silent,
             "serializer_class": self.serializer_class,
+            "prefix": self.prefix,
+            "cache_backend_class": self.cache_backend_class,
+            "async_cache_backend_class": self.async_cache_backend_class,
         }
 
 
-class RedisConfig:
+class RedisConfig(ConfigBase):
     """Redis-specific configuration settings."""
 
     def __init__(self):
+        super().__init__()
         self._url: str | None = None
         self._host: str | None = None
         self._port: int | None = None
@@ -151,7 +208,7 @@ class RedisConfig:
         """
         if self._port is not None:
             return self._port
-        return _str_to_int(os.getenv("REDIS_PORT", "6379"), 6379)
+        return _str_to_int(os.getenv("REDIS_PORT", "6379")) or 6379
 
     @port.setter
     def port(self, value: int):
@@ -165,7 +222,7 @@ class RedisConfig:
         """
         if self._db is not None:
             return self._db
-        return _str_to_int(os.getenv("REDIS_DB", "0"), 0)
+        return _str_to_int(os.getenv("REDIS_DB", "0")) or 0
 
     @db.setter
     def db(self, value: int):
@@ -222,9 +279,9 @@ class RedisConfig:
         if self._socket_timeout is not None:
             return self._socket_timeout
         timeout_str = os.getenv("REDIS_SOCKET_TIMEOUT")
-        if timeout_str:
-            return _str_to_float(timeout_str, 0.0)
-        return None
+        if not timeout_str:
+            return None
+        return _str_to_float(timeout_str, None)
 
     @socket_timeout.setter
     def socket_timeout(self, value: float | None):
@@ -238,7 +295,7 @@ class RedisConfig:
         """
         if self._max_connections is not None:
             return self._max_connections
-        return _str_to_int(os.getenv("REDIS_MAX_CONNECTIONS", "50"), 50)
+        return _str_to_int(os.getenv("REDIS_MAX_CONNECTIONS", "50")) or 50
 
     @max_connections.setter
     def max_connections(self, value: int):
@@ -247,6 +304,7 @@ class RedisConfig:
 
     def reset(self) -> None:
         """Reset all Redis configuration values to defaults (environment variables)."""
+        super().reset()
         self._url = None
         self._host = None
         self._port = None
@@ -258,8 +316,9 @@ class RedisConfig:
         self._max_connections = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return current Redis configuration as dictionary."""
-        return {
+        """Return current Redis configuration as dictionary, merging with base config."""
+        base_config = super().to_dict()
+        redis_config = {
             "url": self.url,
             "host": self.host,
             "port": self.port,
@@ -270,172 +329,5 @@ class RedisConfig:
             "socket_timeout": self.socket_timeout,
             "max_connections": self.max_connections,
         }
-
-
-class Config:
-    """Main configuration class that combines base and Redis-specific settings."""
-
-    def __init__(self):
-        self.base = ConfigBase()
-        self.redis = RedisConfig()
-
-    # Delegate base properties
-    @property
-    def cache_enabled(self) -> bool:
-        return self.base.cache_enabled
-
-    @cache_enabled.setter
-    def cache_enabled(self, value: bool):
-        self.base.cache_enabled = value
-
-    @property
-    def callback_error_silent(self) -> bool:
-        return self.base.callback_error_silent
-
-    @callback_error_silent.setter
-    def callback_error_silent(self, value: bool):
-        self.base.callback_error_silent = value
-
-    @property
-    def serializer_class(self) -> str | None:
-        return self.base.serializer_class
-
-    @serializer_class.setter
-    def serializer_class(self, value: str | None):
-        self.base.serializer_class = value
-
-    # Delegate Redis properties for backwards compatibility
-    @property
-    def redis_url(self) -> str | None:
-        """Backwards compatibility property."""
-        return self.redis.url
-
-    @property
-    def redis_host(self) -> str:
-        """Backwards compatibility property."""
-        return self.redis.host
-
-    @property
-    def redis_port(self) -> int:
-        """Backwards compatibility property."""
-        return self.redis.port
-
-    @property
-    def redis_db(self) -> int:
-        """Backwards compatibility property."""
-        return self.redis.db
-
-    @property
-    def redis_password(self) -> str | None:
-        """Backwards compatibility property."""
-        return self.redis.password
-
-    @property
-    def redis_username(self) -> str | None:
-        """Backwards compatibility property."""
-        return self.redis.username
-
-    @property
-    def redis_ssl(self) -> bool:
-        """Backwards compatibility property."""
-        return self.redis.ssl
-
-    @property
-    def redis_socket_timeout(self) -> float | None:
-        """Backwards compatibility property."""
-        return self.redis.socket_timeout
-
-    @property
-    def redis_connection_pool_max_connections(self) -> int:
-        """Backwards compatibility property."""
-        return self.redis.max_connections
-
-    def reset(self) -> None:
-        """Reset all configuration values to defaults."""
-        self.base.reset()
-        self.redis.reset()
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return all configuration as dictionary."""
-        return {
-            "base": self.base.to_dict(),
-            "redis": self.redis.to_dict(),
-        }
-
-
-def create_redis_client_from_config(
-    redis_config: RedisConfig | None = None,
-) -> "redis.Redis":
-    """Create a Redis client from configuration settings."""
-    import redis
-
-    cfg = redis_config or RedisConfig()
-
-    if cfg.url:
-        return redis.Redis.from_url(
-            cfg.url,
-            decode_responses=True,
-            socket_timeout=cfg.socket_timeout,
-            max_connections=cfg.max_connections,
-        )
-
-    connection_kwargs = {
-        "host": cfg.host,
-        "port": cfg.port,
-        "db": cfg.db,
-        "decode_responses": True,
-        "ssl": cfg.ssl,
-        "max_connections": cfg.max_connections,
-    }
-
-    if cfg.password:
-        connection_kwargs["password"] = cfg.password
-
-    if cfg.username:
-        connection_kwargs["username"] = cfg.username
-
-    if cfg.socket_timeout:
-        connection_kwargs["socket_timeout"] = cfg.socket_timeout
-
-    return redis.Redis(**connection_kwargs)
-
-
-def create_async_redis_client_from_config(
-    redis_config: RedisConfig | None = None,
-) -> "redis.asyncio.Redis":
-    """Create an async Redis client from configuration settings."""
-    import redis.asyncio as async_redis
-
-    cfg = redis_config or RedisConfig()
-
-    if cfg.url:
-        return async_redis.Redis.from_url(
-            cfg.url,
-            decode_responses=True,
-            socket_timeout=cfg.socket_timeout,
-            max_connections=cfg.max_connections,
-        )
-
-    connection_kwargs = {
-        "host": cfg.host,
-        "port": cfg.port,
-        "db": cfg.db,
-        "decode_responses": True,
-        "ssl": cfg.ssl,
-        "max_connections": cfg.max_connections,
-    }
-
-    if cfg.password:
-        connection_kwargs["password"] = cfg.password
-
-    if cfg.username:
-        connection_kwargs["username"] = cfg.username
-
-    if cfg.socket_timeout:
-        connection_kwargs["socket_timeout"] = cfg.socket_timeout
-
-    return async_redis.Redis(**connection_kwargs)
-
-
-# Global config instance
-config = Config()
+        # Merge base config with Redis-specific config
+        return {**base_config, **redis_config}
