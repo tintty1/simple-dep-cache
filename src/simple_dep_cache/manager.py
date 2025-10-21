@@ -50,9 +50,11 @@ class CacheManager:
     def __init__(
         self,
         config: ConfigBase,
+        name: str | None = None,
         backend: CacheBackend | None = None,
         async_backend: AsyncCacheBackend | None = None,
     ):
+        self._name = name
         self.config = config
         # At least one backend must be provided
         if backend is None and async_backend is None:
@@ -69,7 +71,7 @@ class CacheManager:
     @property
     def name(self) -> str:
         # use prefix as name
-        return self.prefix
+        return self._name or self.prefix
 
     def _cache_key(self, key: str) -> str:
         if self.backend is not None:
