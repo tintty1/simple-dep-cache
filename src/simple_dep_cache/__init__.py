@@ -1,4 +1,5 @@
 from .backends import AsyncCacheBackend, CacheBackend
+from .config import Config, ConfigBase, RedisConfig, config
 from .context import add_dependency, current_cache_key, set_cache_ttl
 from .decorators import async_cache_with_deps, cache_with_deps
 from .events import CacheEvent, CacheEventType, StatsCollector, create_logger_callback
@@ -18,6 +19,10 @@ __all__ = [
     "AsyncCacheBackend",
     "RedisCacheBackend",
     "AsyncRedisCacheBackend",
+    "Config",
+    "ConfigBase",
+    "RedisConfig",
+    "config",
     "cache_with_deps",
     "async_cache_with_deps",
     "add_dependency",

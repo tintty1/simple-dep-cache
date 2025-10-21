@@ -10,6 +10,7 @@ import redis.asyncio as async_redis
 
 from .backends import AsyncCacheBackend, CacheBackend
 from .config import (
+    RedisConfig,
     create_async_redis_client_from_config,
     create_redis_client_from_config,
 )
@@ -21,18 +22,27 @@ logger = logging.getLogger(__name__)
 class RedisCacheBackend(CacheBackend):
     """Redis-based cache backend for synchronous operations."""
 
-    def __init__(self, redis_client: redis.Redis | None = None, prefix: str = "cache"):
+    def __init__(
+        self,
+        redis_client: redis.Redis | None = None,
+        redis_config: RedisConfig | None = None,
+        prefix: str = "cache",
+    ):
         super().__init__(prefix)
         if redis_client is None:
             from .config import config
 
+            # Use provided redis_config or fall back to global config
+            redis_cfg = redis_config or config.redis
+
             self._redis = None
             if config.cache_enabled:
                 logger.info(
-                    "Creating Redis client from environment configuration. "
-                    "Provide a custom redis_client parameter to override."
+                    "Creating Redis client from %s configuration. "
+                    "Provide a custom redis_client parameter to override.",
+                    "provided redis_config" if redis_config else "environment",
                 )
-                self._redis = create_redis_client_from_config()
+                self._redis = create_redis_client_from_config(redis_cfg)
         else:
             self._redis = redis_client
         self.serializer = get_serializer()
@@ -118,14 +128,25 @@ class RedisCacheBackend(CacheBackend):
 class AsyncRedisCacheBackend(AsyncCacheBackend):
     """Redis-based cache backend for asynchronous operations."""
 
-    def __init__(self, redis_client: async_redis.Redis | None = None, prefix: str = "cache"):
+    def __init__(
+        self,
+        redis_client: async_redis.Redis | None = None,
+        redis_config: RedisConfig | None = None,
+        prefix: str = "cache",
+    ):
         super().__init__(prefix)
         if redis_client is None:
+            from .config import config
+
+            # Use provided redis_config or fall back to global config
+            redis_cfg = redis_config or config.redis
+
             logger.info(
-                "Creating async Redis client from environment configuration. "
-                "Provide a custom redis_client parameter to override."
+                "Creating async Redis client from %s configuration. "
+                "Provide a custom redis_client parameter to override.",
+                "provided redis_config" if redis_config else "environment",
             )
-            self.redis = create_async_redis_client_from_config()
+            self.redis = create_async_redis_client_from_config(redis_cfg)
         else:
             self.redis = redis_client
         self.serializer = get_serializer()

@@ -5,7 +5,7 @@ import fakeredis
 import pytest
 
 from simple_dep_cache.events import CacheEventType
-from simple_dep_cache.manager import CacheManager, get_default_cache_manager
+from simple_dep_cache.manager import CacheManager
 
 
 @pytest.fixture

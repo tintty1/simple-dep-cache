@@ -346,27 +346,3 @@ class CacheManager:
                 stacklevel=2,
             )
         # No error needed for aclose - it's fine if there's no backend to close
-
-
-def get_default_cache_manager(
-    backend: CacheBackend, async_backend: AsyncCacheBackend | None = None
-) -> CacheManager:
-    """Get the default cache manager with specified backend(s)."""
-    global _default_manager
-    if _default_manager is None:
-        with _manager_lock:
-            if _default_manager is None:
-                _default_manager = CacheManager(backend=backend, async_backend=async_backend)
-    return _default_manager
-
-
-def get_default_async_cache_manager(
-    async_backend: AsyncCacheBackend, backend: CacheBackend | None = None
-) -> CacheManager:
-    """Get the default cache manager with specified backend(s)."""
-    global _default_manager
-    if _default_manager is None:
-        with _manager_lock:
-            if _default_manager is None:
-                _default_manager = CacheManager(backend=backend, async_backend=async_backend)
-    return _default_manager
