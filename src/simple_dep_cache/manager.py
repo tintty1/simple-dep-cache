@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import warnings
+from collections.abc import Callable
 
 from .backends import AsyncCacheBackend, CacheBackend
 from .config import ConfigBase
@@ -62,7 +63,7 @@ class CacheManager:
 
         self.backend = backend
         self.async_backend = async_backend
-        self.events = EventEmitter()
+        self.events = EventEmitter(self.config)
 
     @property
     def prefix(self) -> str:
@@ -380,6 +381,52 @@ class CacheManager:
             return self.backend.ttl(key)
         else:
             raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
+
+    def on_event(self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]) -> None:
+        """Register a callback for a specific cache event type.
+
+        Args:
+            event_type: The type of event to listen for
+            callback: Function to call when the event occurs
+        """
+        self.events.on(event_type, callback)
+
+    def on_all_events(self, callback: Callable[[CacheEvent], None]) -> None:
+        """Register a callback for all cache events.
+
+        Args:
+            callback: Function to call when any cache event occurs
+        """
+        self.events.on_all(callback)
+
+    def remove_event_callback(
+        self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]
+    ) -> bool:
+        """Remove a callback for a specific event type.
+
+        Args:
+            event_type: The type of event to stop listening for
+            callback: The callback function to remove
+
+        Returns:
+            True if the callback was removed, False if it wasn't found
+        """
+        return self.events.off(event_type, callback)
+
+    def remove_all_events_callback(self, callback: Callable[[CacheEvent], None]) -> bool:
+        """Remove a callback from all events.
+
+        Args:
+            callback: The callback function to remove
+
+        Returns:
+            True if the callback was removed, False if it wasn't found
+        """
+        return self.events.off_all(callback)
+
+    def clear_all_event_callbacks(self) -> None:
+        """Remove all registered event callbacks."""
+        self.events.clear_all()
 
     async def aclose(self) -> None:
         """Close the backend connection."""
