@@ -4,9 +4,10 @@ import threading
 import time
 import warnings
 from collections.abc import Callable
+from typing import Optional
 
 from .backends import AsyncCacheBackend, CacheBackend
-from .config import ConfigBase
+from .config import ConfigBase, RedisConfig
 from .events import CacheEvent, CacheEventType, EventEmitter
 from .types import CacheValue
 
@@ -23,26 +24,36 @@ def get_or_create_cache_manager(
     backend: CacheBackend | None = None,
     async_backend: AsyncCacheBackend | None = None,
     create_async_backend: bool = False,
-) -> "CacheManager":
+) -> Optional["CacheManager"]:
     """Get or create a CacheManager for the given configuration."""
     global _managers
 
-    if name is None:
-        if config is None:
-            raise ValueError("Either 'name' or 'config' must be provided.")
-        name = config.prefix
+    manager = None
 
     with _manager_lock:
-        if name not in _managers:
+        if name is not None and name in _managers:
+            # manager already exists, ignore other params
+            manager = _managers[name]
+            config = manager.config
+        if config is None:
+            config = RedisConfig()
+        if not config.cache_enabled:
+            logger.warning("Caching is disabled in the configuration.")
+            return None
+        if name is None:
+            name = config.prefix
+        if manager is None:
             from .factories import create_cache_manager
 
-            _managers[name] = create_cache_manager(
+            manager = create_cache_manager(
+                name=name,
                 config=config,
                 backend=backend,
                 async_backend=async_backend,
                 create_async_backend=create_async_backend,
             )
-        return _managers[name]
+            _managers[name] = manager
+    return manager
 
 
 class CacheManager:

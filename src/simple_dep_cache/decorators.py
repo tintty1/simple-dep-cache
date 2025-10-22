@@ -1,12 +1,8 @@
-import asyncio
 import hashlib
-import logging
-import traceback
 from collections.abc import Callable
 from functools import wraps
 from typing import Any, NamedTuple
 
-from .config import config
 from .context import (
     clear_current_dependencies,
     current_cache_key,
@@ -18,7 +14,7 @@ from .context import (
     set_current_cache_key,
     set_current_dependencies,
 )
-from .manager import CacheManager
+from .manager import CacheManager, get_or_create_cache_manager
 
 
 class _ContextState(NamedTuple):
@@ -75,16 +71,6 @@ def _generate_cache_key(func: Callable, args: tuple, kwargs: dict) -> str:
     return hashlib.md5(full_key.encode()).hexdigest()
 
 
-def _generate_cache_key_with_prefix(
-    func: Callable, args: tuple, kwargs: dict, key_prefix: str | None
-) -> str:
-    """Generate cache key with optional prefix."""
-    cache_key = _generate_cache_key(func, args, kwargs)
-    if key_prefix:
-        cache_key = f"{key_prefix}:{cache_key}"
-    return cache_key
-
-
 def _handle_cache_hit(cached_result: Any) -> Any:
     """Handle cache hit, re-raising exceptions if needed."""
     if cached_result is not None:
@@ -92,78 +78,6 @@ def _handle_cache_hit(cached_result: Any) -> Any:
             raise cached_result
         return cached_result
     return None
-
-
-def _invoke_callback(
-    callback: Callable | None,
-    func: Callable,
-    cache_manager: CacheManager,
-    args: tuple,
-    kwargs: dict,
-    is_hit: bool,
-    cached_result: Any = None,
-) -> None:
-    """Invoke cache hit/miss callback if provided."""
-    if callback:
-        try:
-            callback(
-                func=func,
-                cache_manager=cache_manager,
-                args=args,
-                kwargs=kwargs,
-                is_hit=is_hit,
-                cached_result=cached_result,
-            )
-        except Exception as e:
-            # Callback exceptions should not break main flow, but should be logged
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Cache callback exception occurred. Function: %s, Error: %s",
-                getattr(func, "__name__", repr(func)),
-                str(e),
-            )
-            logger.debug("Callback exception traceback:\n%s", traceback.format_exc())
-
-
-async def _invoke_async_callback(
-    callback: Callable | None,
-    func: Callable,
-    cache_manager: CacheManager,
-    args: tuple,
-    kwargs: dict,
-    is_hit: bool,
-    cached_result: Any = None,
-) -> None:
-    """Invoke cache hit/miss callback if provided (supports async callbacks)."""
-    if callback:
-        try:
-            if asyncio.iscoroutinefunction(callback):
-                await callback(
-                    func=func,
-                    cache_manager=cache_manager,
-                    args=args,
-                    kwargs=kwargs,
-                    is_hit=is_hit,
-                    cached_result=cached_result,
-                )
-            else:
-                callback(
-                    func=func,
-                    cache_manager=cache_manager,
-                    args=args,
-                    kwargs=kwargs,
-                    is_hit=is_hit,
-                    cached_result=cached_result,
-                )
-        except Exception as e:
-            # Callback exceptions should not break main flow, but should be logged
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Async cache callback exception occurred. Function: %s, Error: %s",
-                getattr(func, "__name__", repr(func)),
-                str(e),
-            )
-            logger.debug("Async callback exception traceback:\n%s", traceback.format_exc())
 
 
 def _setup_context(cache_key: str, cache_manager: CacheManager) -> _ContextState:
@@ -248,87 +162,40 @@ def _cache_result_or_exception_sync(
             )
 
 
-async def _cache_result_or_exception_async(
-    cache_manager: CacheManager,
-    cache_key: str,
-    result: Any,
-    exception: Exception | None,
-    dependencies: set | None,
-    ttl: int | None,
-    cache_exception_types: list[type[Exception]] | None,
-) -> None:
-    """Cache result or exception for async operations."""
-    all_dependencies = _collect_and_merge_dependencies(dependencies)
-    effective_ttl = _resolve_effective_ttl(get_cache_ttl(), ttl)
-
-    if exception is None:
-        await cache_manager.set(
-            cache_key,
-            result,
-            effective_ttl,
-            all_dependencies if all_dependencies else None,
-        )
-    else:
-        if _should_cache_exception(exception, cache_exception_types):
-            await cache_manager.set(
-                cache_key,
-                exception,
-                effective_ttl,
-                all_dependencies if all_dependencies else None,
-            )
-
-
 def cache_with_deps(
     *,
-    cache_manager: CacheManager | None = None,
+    name: str | None = None,
     ttl: int | None = None,
-    key_prefix: str | None = None,
     dependencies: set | None = None,
     cache_exception_types: list[type[Exception]] | None = None,
-    callback: Callable | None = None,
 ) -> Callable:
     """
     Decorator for caching function results with dependency tracking.
 
     Args:
-        cache_manager: The cache manager instance to use (optional)
+        name: The cache manager name to use (optional)
         ttl: Time to live in seconds (optional)
-        key_prefix: Custom prefix for cache keys (optional)
         dependencies: Additional dependencies to track (optional)
         cache_exception_types: List of exception types to cache.
             If None or empty, exceptions are not cached (optional)
-        callback: Callback function invoked on cache hit or miss.
-            Called with keyword arguments: func, cache_manager, args, kwargs, is_hit, cached_result
-            is_hit=True for cache hits, False for cache misses (optional)
     """
 
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
-            # If caching is disabled, just execute the function
-            if not config.cache_enabled:
+            # Get cache manager from name
+            active_cache_manager = get_or_create_cache_manager(name=name)
+            # If the cache manager is None, meaning caching is disabled, just execute the function
+            if active_cache_manager is None:
                 return func(*args, **kwargs)
 
-            # Require cache manager to be provided
-            if cache_manager is None:
-                raise ValueError(
-                    "cache_manager must be provided to cache_with_deps decorator. "
-                    "Use create_cache_manager() to create one."
-                )
-            active_cache_manager = cache_manager
-
-            cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
+            cache_key = _generate_cache_key(func, args, kwargs)
 
             cached_result = active_cache_manager.get(cache_key)
             if cached_result is not None:
-                _invoke_callback(
-                    callback, func, active_cache_manager, args, kwargs, True, cached_result
-                )
                 cache_hit_result = _handle_cache_hit(cached_result)
                 if cache_hit_result is not None:
                     return cache_hit_result
-            else:
-                _invoke_callback(callback, func, active_cache_manager, args, kwargs, False, None)
 
             # Set up context for dependency tracking
             old_context = _setup_context(cache_key, active_cache_manager)
@@ -341,98 +208,6 @@ def cache_with_deps(
                 exception = exc
             finally:
                 _cache_result_or_exception_sync(
-                    active_cache_manager,
-                    cache_key,
-                    result,
-                    exception,
-                    dependencies,
-                    ttl,
-                    cache_exception_types,
-                )
-
-                _restore_context(old_context)
-
-            if exception is not None:
-                raise exception
-            return result
-
-        return wrapper
-
-    return decorator
-
-
-def async_cache_with_deps(
-    *,
-    cache_manager: CacheManager | None = None,
-    ttl: int | None = None,
-    key_prefix: str | None = None,
-    dependencies: set | None = None,
-    cache_exception_types: list[type[Exception]] | None = None,
-    callback: Callable | None = None,
-) -> Callable:
-    """
-    Async decorator for caching function results with dependency tracking.
-
-    Args:
-        cache_manager: The async cache manager instance to use (optional)
-        ttl: Time to live in seconds (optional)
-        key_prefix: Custom prefix for cache keys (optional)
-        dependencies: Additional dependencies to track (optional)
-        cache_exception_types: List of exception types to cache.
-            If None or empty, exceptions are not cached (optional)
-        callback: Callback function invoked on cache hit or miss.
-            Can be sync or async. Called with keyword arguments:
-                func, cache_manager, args, kwargs, is_hit, cached_result
-            is_hit=True for cache hits, False for cache misses (optional)
-    """
-
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            # If caching is disabled, just execute the function
-            if not config.cache_enabled:
-                if asyncio.iscoroutinefunction(func):
-                    return await func(*args, **kwargs)
-                else:
-                    return func(*args, **kwargs)
-
-            # Require cache manager to be provided
-            if cache_manager is None:
-                raise ValueError(
-                    "cache_manager must be provided to async_cache_with_deps decorator. "
-                    "Use create_async_cache_manager() to create one."
-                )
-            active_cache_manager = cache_manager
-
-            cache_key = _generate_cache_key_with_prefix(func, args, kwargs, key_prefix)
-
-            cached_result = await active_cache_manager.get(cache_key)
-            if cached_result is not None:
-                await _invoke_async_callback(
-                    callback, func, active_cache_manager, args, kwargs, True, cached_result
-                )
-                cache_hit_result = _handle_cache_hit(cached_result)
-                if cache_hit_result is not None:
-                    return cache_hit_result
-            else:
-                await _invoke_async_callback(
-                    callback, func, active_cache_manager, args, kwargs, False, None
-                )
-
-            # Set up context for dependency tracking
-            old_context = _setup_context(cache_key, active_cache_manager)
-
-            result = None
-            exception = None
-            try:
-                if asyncio.iscoroutinefunction(func):
-                    result = await func(*args, **kwargs)
-                else:
-                    result = func(*args, **kwargs)
-            except Exception as exc:
-                exception = exc
-            finally:
-                await _cache_result_or_exception_async(
                     active_cache_manager,
                     cache_key,
                     result,

@@ -5,7 +5,7 @@ from .config import (
     config,
 )
 from .context import add_dependency, current_cache_key, set_cache_ttl
-from .decorators import async_cache_with_deps, cache_with_deps
+from .decorators import cache_with_deps
 from .events import CacheEvent, CacheEventType, StatsCollector, create_logger_callback
 from .factories import (
     create_async_backend_from_config,
