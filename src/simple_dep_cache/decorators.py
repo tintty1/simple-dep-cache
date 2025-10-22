@@ -15,8 +15,7 @@ from .context import (
     set_current_cache_key,
     set_current_dependencies,
 )
-from .factories import get_or_create_cache_manager
-from .manager import CacheManager
+from .manager import CacheManager, get_or_create_cache_manager
 
 
 class _ContextState(NamedTuple):
