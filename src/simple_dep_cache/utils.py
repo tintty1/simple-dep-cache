@@ -47,7 +47,7 @@ class DynamicImporter:
         return getattr(module, attribute_name)
 
     @staticmethod
-    def load_exception(exception_module: str, exception_class: str) -> type[Exception]:
+    def load_exception(exception_module: str, exception_class: str) -> None | type[Exception]:
         """
         Load an exception class from module and class name.
 

@@ -1,6 +1,6 @@
 import json
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 from .config import ConfigBase
 from .utils import DynamicImporter
@@ -25,7 +25,7 @@ class CacheableValue(Protocol):
         ...
 
     @classmethod
-    def cache_deserialize(cls, data: str | bytes) -> Any:
+    def cache_deserialize(cls, data: str | bytes) -> Self:
         """Deserialize the value from cached data."""
         ...
 
