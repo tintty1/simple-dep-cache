@@ -1,5 +1,4 @@
 import builtins
-import logging
 import threading
 import time
 import warnings
@@ -10,8 +9,6 @@ from .backends import AsyncCacheBackend, CacheBackend
 from .config import ConfigBase, RedisConfig
 from .events import CacheEvent, CacheEventType, EventEmitter
 from .types import CacheValue
-
-logger = logging.getLogger(__name__)
 
 _manager_lock = threading.Lock()
 
@@ -38,7 +35,9 @@ def get_or_create_cache_manager(
         if config is None:
             config = RedisConfig()
         if not config.cache_enabled:
-            logger.warning("Caching is disabled in the configuration.")
+            import warnings
+
+            warnings.warn("Caching is disabled in the configuration.", UserWarning, stacklevel=2)
             return None
         if name is None:
             name = config.prefix
@@ -451,3 +450,7 @@ class CacheManager:
                 stacklevel=2,
             )
         # No error needed for aclose - it's fine if there's no backend to close
+
+
+# Alias for backward compatibility - the unified CacheManager handles both sync and async
+AsyncCacheManager = CacheManager

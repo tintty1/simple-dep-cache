@@ -2,29 +2,15 @@ import asyncio
 import hashlib
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, NamedTuple
+from typing import Any
 
 from .context import (
-    clear_current_dependencies,
-    current_cache_key,
-    get_cache_manager,
     get_cache_ttl,
     get_current_dependencies,
-    set_cache_manager,
-    set_cache_ttl,
-    set_current_cache_key,
-    set_current_dependencies,
+    pop_operation_context,
+    push_operation_context,
 )
 from .manager import CacheManager, get_or_create_cache_manager
-
-
-class _ContextState(NamedTuple):
-    """Represents the saved context state for restoration."""
-
-    dependencies: set | None
-    cache_key: str | None
-    cache_manager: CacheManager | None
-    cache_ttl: int | None
 
 
 def _get_cache_key_for_arg(arg) -> str:
@@ -81,47 +67,24 @@ def _handle_cache_hit(cached_result: Any) -> Any:
     return None
 
 
-def _setup_context(cache_key: str, cache_manager: CacheManager) -> _ContextState:
+def _setup_context(
+    cache_key: str,
+    cache_manager: CacheManager,
+    cache_ttl: int | None = None,
+    dependencies: set[str] | None = None,
+):
     """Set up context for dependency tracking and return old state."""
-    old_state = _ContextState(
-        dependencies=get_current_dependencies(),
-        cache_key=current_cache_key(),
-        cache_manager=get_cache_manager(),
-        cache_ttl=get_cache_ttl(),
+    push_operation_context(
+        manager_name=cache_manager.name,
+        cache_key=cache_key,
+        cache_manager=cache_manager,
+        cache_ttl=cache_ttl,
+        dependencies=dependencies,
     )
 
-    clear_current_dependencies()
-    set_current_cache_key(cache_key)
-    set_cache_manager(cache_manager)
-    set_cache_ttl(None)
 
-    return old_state
-
-
-def _restore_context(context_state: _ContextState) -> None:
-    """Restore previous context values."""
-    set_current_dependencies(context_state.dependencies)
-    set_current_cache_key(context_state.cache_key)
-    set_cache_manager(context_state.cache_manager)
-    set_cache_ttl(context_state.cache_ttl)
-
-
-def _collect_and_merge_dependencies(dependencies: set | None) -> set:
-    """Collect dependencies from execution and merge with static dependencies."""
-    collected_dependencies = get_current_dependencies()
-    all_dependencies = set()
-
-    if collected_dependencies:
-        all_dependencies.update(collected_dependencies)
-    if dependencies:
-        all_dependencies.update(dependencies)
-
-    return all_dependencies
-
-
-def _resolve_effective_ttl(context_ttl: int | None, decorator_ttl: int | None) -> int | None:
-    """Resolve effective TTL with context taking precedence."""
-    return context_ttl if context_ttl is not None else decorator_ttl
+def _restore_context() -> None:
+    pop_operation_context()
 
 
 def _should_cache_exception(
@@ -143,23 +106,21 @@ def _cache_result_or_exception_sync(
     cache_exception_types: list[type[Exception]] | None,
 ) -> None:
     """Cache result or exception for sync operations."""
-    all_dependencies = _collect_and_merge_dependencies(dependencies)
 
-    effective_ttl = _resolve_effective_ttl(get_cache_ttl(), ttl)
     if exception is None:
         cache_manager.set(
             cache_key,
             result,
-            effective_ttl,
-            all_dependencies if all_dependencies else None,
+            ttl,
+            dependencies,
         )
     else:
         if _should_cache_exception(exception, cache_exception_types):
             cache_manager.set(
                 cache_key,
                 exception,
-                effective_ttl,
-                all_dependencies if all_dependencies else None,
+                ttl,
+                dependencies,
             )
 
 
@@ -173,23 +134,20 @@ async def _cache_result_or_exception_async(
     cache_exception_types: list[type[Exception]] | None,
 ) -> None:
     """Cache result or exception for async operations."""
-    all_dependencies = _collect_and_merge_dependencies(dependencies)
-    effective_ttl = _resolve_effective_ttl(get_cache_ttl(), ttl)
-
     if exception is None:
         await cache_manager.aset(
             cache_key,
             result,
-            effective_ttl,
-            all_dependencies if all_dependencies else None,
+            ttl,
+            dependencies,
         )
     else:
         if _should_cache_exception(exception, cache_exception_types):
             await cache_manager.aset(
                 cache_key,
                 exception,
-                effective_ttl,
-                all_dependencies if all_dependencies else None,
+                ttl,
+                dependencies,
             )
 
 
@@ -218,7 +176,6 @@ def cache_with_deps(
 
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
-                # Get cache manager from name
                 active_cache_manager = get_or_create_cache_manager(name=name)
                 # If cache manager is None (caching disabled), just execute the function
                 if active_cache_manager is None:
@@ -232,8 +189,7 @@ def cache_with_deps(
                     if cache_hit_result is not None:
                         return cache_hit_result
 
-                # Set up context for dependency tracking
-                old_context = _setup_context(cache_key, active_cache_manager)
+                _setup_context(cache_key, active_cache_manager, ttl, dependencies)
 
                 result = None
                 exception = None
@@ -242,17 +198,19 @@ def cache_with_deps(
                 except Exception as exc:
                     exception = exc
                 finally:
+                    current_deps = get_current_dependencies()
+                    effective_ttl = get_cache_ttl()
                     await _cache_result_or_exception_async(
                         active_cache_manager,
                         cache_key,
                         result,
                         exception,
-                        dependencies,
-                        ttl,
+                        current_deps,
+                        effective_ttl,
                         cache_exception_types,
                     )
 
-                    _restore_context(old_context)
+                    _restore_context()
 
                 if exception is not None:
                     raise exception
@@ -263,7 +221,6 @@ def cache_with_deps(
 
             @wraps(func)
             def sync_wrapper(*args, **kwargs):
-                # Get cache manager from name
                 active_cache_manager = get_or_create_cache_manager(name=name)
                 # If cache manager is None (caching disabled), just execute the function
                 if active_cache_manager is None:
@@ -277,8 +234,7 @@ def cache_with_deps(
                     if cache_hit_result is not None:
                         return cache_hit_result
 
-                # Set up context for dependency tracking
-                old_context = _setup_context(cache_key, active_cache_manager)
+                _setup_context(cache_key, active_cache_manager, ttl, dependencies)
 
                 result = None
                 exception = None
@@ -287,17 +243,19 @@ def cache_with_deps(
                 except Exception as exc:
                     exception = exc
                 finally:
+                    current_deps = get_current_dependencies()
+                    effective_ttl = get_cache_ttl()
                     _cache_result_or_exception_sync(
                         active_cache_manager,
                         cache_key,
                         result,
                         exception,
-                        dependencies,
-                        ttl,
+                        current_deps,
+                        effective_ttl,
                         cache_exception_types,
                     )
 
-                    _restore_context(old_context)
+                    _restore_context()
 
                 if exception is not None:
                     raise exception
@@ -306,3 +264,7 @@ def cache_with_deps(
             return sync_wrapper
 
     return decorator
+
+
+# Alias for backward compatibility
+async_cache_with_deps = cache_with_deps

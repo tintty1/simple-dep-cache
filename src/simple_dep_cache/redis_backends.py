@@ -10,10 +10,6 @@ import redis.asyncio as async_redis
 
 from .backends import AsyncCacheBackend, CacheBackend
 from .config import RedisConfig
-from .factories import (
-    create_async_redis_client_from_config,
-    create_redis_client_from_config,
-)
 from .types import get_serializer
 
 logger = logging.getLogger(__name__)
@@ -31,6 +27,8 @@ class RedisCacheBackend(CacheBackend):
         if redis_client is None:
             self._redis = None
             if config.cache_enabled:
+                from .factories import create_redis_client_from_config
+
                 self._redis = create_redis_client_from_config(config)
         else:
             self._redis = redis_client
@@ -124,6 +122,8 @@ class AsyncRedisCacheBackend(AsyncCacheBackend):
     ):
         super().__init__(config)
         if redis_client is None:
+            from .factories import create_async_redis_client_from_config
+
             self.redis = create_async_redis_client_from_config(config)
         else:
             self.redis = redis_client

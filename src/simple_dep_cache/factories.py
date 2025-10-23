@@ -2,7 +2,6 @@
 Factory functions for creating cache backends and managers.
 """
 
-import importlib
 from typing import TYPE_CHECKING
 
 import redis
@@ -12,6 +11,7 @@ from .backends import AsyncCacheBackend, CacheBackend
 from .config import ConfigBase, RedisConfig
 from .manager import CacheManager
 from .redis_backends import AsyncRedisCacheBackend, RedisCacheBackend
+from .utils import DynamicImporter
 
 if TYPE_CHECKING:
     import redis
@@ -20,10 +20,7 @@ if TYPE_CHECKING:
 
 def load_class(class_path: str):
     """Load a class from a string like 'package.module.ClassName'."""
-    module_path, class_name = class_path.rsplit(".", 1)
-    module = importlib.import_module(module_path)
-    cls = getattr(module, class_name)
-    return cls
+    return DynamicImporter.load_class(class_path)
 
 
 def create_backend_from_config(config: ConfigBase) -> CacheBackend:
@@ -202,3 +199,27 @@ def create_async_redis_client_from_config(
         connection_kwargs["socket_timeout"] = cfg.socket_timeout
 
     return async_redis.Redis(**connection_kwargs)
+
+
+def create_async_cache_manager(
+    name: str | None = None,
+    ttl: int | None = None,
+    dependencies: set | None = None,
+    config: ConfigBase | None = None,
+    backend: AsyncCacheBackend | None = None,
+) -> CacheManager:
+    """Create an async cache manager with specified configuration."""
+    from .config import ConfigBase
+
+    cfg = config or ConfigBase()
+
+    if backend is None:
+        backend = create_async_backend_from_config(cfg)
+
+    return CacheManager(
+        name=name,
+        ttl=ttl,
+        dependencies=dependencies,
+        backend=backend,
+        async_backend=backend,
+    )

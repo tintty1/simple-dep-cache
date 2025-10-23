@@ -2,7 +2,6 @@ from .backends import AsyncCacheBackend, CacheBackend
 from .config import (
     ConfigBase,
     RedisConfig,
-    config,
 )
 from .context import add_dependency, current_cache_key, set_cache_ttl
 from .decorators import cache_with_deps
