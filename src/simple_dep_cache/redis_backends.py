@@ -3,7 +3,8 @@ Redis-specific cache backend implementations.
 """
 
 import logging
-from typing import Any
+from collections.abc import Awaitable
+from typing import Any, cast
 
 import redis
 import redis.asyncio as async_redis
@@ -32,7 +33,7 @@ class RedisCacheBackend(CacheBackend):
                 self._redis = create_redis_client_from_config(config)
         else:
             self._redis = redis_client
-        self.serializer = get_serializer()
+        self.serializer = get_serializer(config)
 
     @property
     def redis(self) -> redis.Redis:
@@ -62,7 +63,7 @@ class RedisCacheBackend(CacheBackend):
                 dep_key = self._deps_key(dep)
                 self.redis.sadd(dep_key, cache_key)
                 if ttl:
-                    current_ttl = self.redis.ttl(dep_key)
+                    current_ttl = cast(int, self.redis.ttl(dep_key))
                     # Ensure dependency tracking key lives at least as long as cache entries
                     # current_ttl: -1 = no expiration, -2 = doesn't exist, >0 = remaining seconds
                     # Set/extend TTL if: key is persistent OR key has shorter TTL than ours
@@ -77,23 +78,23 @@ class RedisCacheBackend(CacheBackend):
         if value is None:
             return None
 
-        return self.serializer.load(value)
+        return self.serializer.load(cast(bytes, value))
 
     def delete(self, *keys: str) -> int:
         """Delete cache entries."""
         cache_keys = [self._cache_key(key) for key in keys]
-        return self.redis.delete(*cache_keys) if cache_keys else 0
+        return cast(int, self.redis.delete(*cache_keys)) if cache_keys else 0
 
     def clear(self, pattern: str = "*") -> int:
         """Clear cache entries matching pattern."""
         pattern_key = self._cache_key(pattern)
         keys = list(self.redis.scan_iter(match=pattern_key))
-        return self.redis.delete(*keys) if keys else 0
+        return cast(int, self.redis.delete(*keys)) if keys else 0
 
     def invalidate_dependency(self, dependency: str) -> int:
         """Invalidate all cache entries that depend on the given dependency."""
         dep_key = self._deps_key(dependency)
-        cache_keys = self.redis.smembers(dep_key)
+        cache_keys = cast(set, self.redis.smembers(dep_key))
 
         if not cache_keys:
             count = 0
@@ -101,7 +102,7 @@ class RedisCacheBackend(CacheBackend):
             count = self.redis.delete(*cache_keys)
             self.redis.delete(dep_key)
 
-        return count
+        return cast(int, count)
 
     def exists(self, key: str) -> bool:
         """Check if a cache key exists."""
@@ -109,7 +110,7 @@ class RedisCacheBackend(CacheBackend):
 
     def ttl(self, key: str) -> int:
         """Get TTL for a cache key."""
-        return self.redis.ttl(self._cache_key(key))
+        return cast(int, self.redis.ttl(self._cache_key(key)))
 
 
 class AsyncRedisCacheBackend(AsyncCacheBackend):
@@ -127,7 +128,7 @@ class AsyncRedisCacheBackend(AsyncCacheBackend):
             self.redis = create_async_redis_client_from_config(config)
         else:
             self.redis = redis_client
-        self.serializer = get_serializer()
+        self.serializer = get_serializer(config)
 
     async def set(
         self,
@@ -148,7 +149,7 @@ class AsyncRedisCacheBackend(AsyncCacheBackend):
         if dependencies:
             for dep in dependencies:
                 dep_key = self._deps_key(dep)
-                await self.redis.sadd(dep_key, cache_key)
+                await cast(Awaitable, self.redis.sadd(dep_key, cache_key))
                 if ttl:
                     current_ttl = await self.redis.ttl(dep_key)
                     # Ensure dependency tracking key lives at least as long as cache entries
@@ -183,7 +184,7 @@ class AsyncRedisCacheBackend(AsyncCacheBackend):
     async def invalidate_dependency(self, dependency: str) -> int:
         """Invalidate all cache entries that depend on the given dependency."""
         dep_key = self._deps_key(dependency)
-        cache_keys = await self.redis.smembers(dep_key)
+        cache_keys = await cast(Awaitable, self.redis.smembers(dep_key))
 
         if not cache_keys:
             count = 0
