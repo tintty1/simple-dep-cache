@@ -450,7 +450,3 @@ class CacheManager:
                 stacklevel=2,
             )
         # No error needed for aclose - it's fine if there's no backend to close
-
-
-# Alias for backward compatibility - the unified CacheManager handles both sync and async
-AsyncCacheManager = CacheManager

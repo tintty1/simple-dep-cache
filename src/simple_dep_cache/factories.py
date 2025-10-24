@@ -199,27 +199,3 @@ def create_async_redis_client_from_config(
         connection_kwargs["socket_timeout"] = cfg.socket_timeout
 
     return async_redis.Redis(**connection_kwargs)
-
-
-def create_async_cache_manager(
-    name: str | None = None,
-    ttl: int | None = None,
-    dependencies: set | None = None,
-    config: ConfigBase | None = None,
-    backend: AsyncCacheBackend | None = None,
-) -> CacheManager:
-    """Create an async cache manager with specified configuration."""
-    from .config import ConfigBase
-
-    cfg = config or ConfigBase()
-
-    if backend is None:
-        backend = create_async_backend_from_config(cfg)
-
-    return CacheManager(
-        name=name,
-        ttl=ttl,
-        dependencies=dependencies,
-        backend=backend,
-        async_backend=backend,
-    )

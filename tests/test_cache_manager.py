@@ -1,360 +1,887 @@
-import time
-from unittest.mock import Mock, patch
+"""Tests for simple_dep_cache.manager module."""
 
-import fakeredis
+from unittest.mock import MagicMock
+
 import pytest
 
+from simple_dep_cache.backends import AsyncCacheBackend, CacheBackend
+from simple_dep_cache.config import ConfigBase
 from simple_dep_cache.events import CacheEventType
-from simple_dep_cache.manager import CacheManager
+from simple_dep_cache.manager import CacheManager, get_or_create_cache_manager
 
 
-@pytest.fixture
-def redis_client():
-    return fakeredis.FakeRedis(decode_responses=True)
+class FakeCacheBackend(CacheBackend):
+    """A simple in-memory fake backend for testing."""
+
+    def __init__(self, config: ConfigBase):
+        super().__init__(config)
+        self._storage = {}
+        self._deps_storage = {}
+        self._disabled = not config.cache_enabled
+
+    def set(self, key: str, value, ttl: int = None, dependencies: set = None) -> None:
+        if self._disabled:
+            raise RuntimeError("Cache is disabled")
+        self._storage[self._cache_key(key)] = {
+            "value": value,
+            "ttl": ttl,
+            "dependencies": dependencies or set(),
+        }
+
+        # Track dependencies
+        if dependencies:
+            for dep in dependencies:
+                deps_key = self._deps_key(dep)
+                if deps_key not in self._deps_storage:
+                    self._deps_storage[deps_key] = set()
+                self._deps_storage[deps_key].add(self._cache_key(key))
+
+    def get(self, key: str):
+        if self._disabled:
+            raise RuntimeError("Cache is disabled")
+        return self._storage.get(self._cache_key(key), {}).get("value")
+
+    def delete(self, *keys: str) -> int:
+        if self._disabled:
+            raise RuntimeError("Cache is disabled")
+        count = 0
+        for key in keys:
+            cache_key = self._cache_key(key)
+            if cache_key in self._storage:
+                del self._storage[cache_key]
+                count += 1
+        return count
+
+    def clear(self, pattern: str = "*") -> int:
+        if self._disabled:
+            raise RuntimeError("Cache is disabled")
+        if pattern == "*":
+            count = len(self._storage)
+            self._storage.clear()
+            return count
+        # Simple pattern matching - match prefixes for testing
+        # Need to account for the cache prefix
+        prefix = pattern.rstrip("*")
+        # Convert pattern to full key pattern with cache prefix
+        full_pattern = f"{self.prefix}:{prefix}"
+        count = 0
+        keys_to_delete = []
+        for key in self._storage:
+            if key.startswith(full_pattern):
+                keys_to_delete.append(key)
+        for key in keys_to_delete:
+            del self._storage[key]
+            count += 1
+        return count
+
+    def exists(self, key: str) -> bool:
+        if self._disabled:
+            raise RuntimeError("Cache is disabled")
+        return self._cache_key(key) in self._storage
+
+    def ttl(self, key: str) -> int:
+        if self._disabled:
+            raise RuntimeError("Cache is disabled")
+        cache_key = self._cache_key(key)
+        if cache_key not in self._storage:
+            return -2
+        ttl = self._storage[cache_key].get("ttl")
+        return ttl if ttl is not None else -1
+
+    def invalidate_dependency(self, dependency: str) -> int:
+        if self._disabled:
+            raise RuntimeError("Cache is disabled")
+        deps_key = self._deps_key(dependency)
+        if deps_key not in self._deps_storage:
+            return 0
+
+        keys_to_delete = self._deps_storage[deps_key]
+        count = 0
+        for cache_key in keys_to_delete:
+            if cache_key in self._storage:
+                del self._storage[cache_key]
+                count += 1
+
+        # Clear the dependency tracking
+        del self._deps_storage[deps_key]
+
+        # Remove this dependency from all key dependency sets
+        for dep_key in self._deps_storage:
+            self._deps_storage[dep_key].discard(dependency)
+
+        return count
 
 
-@pytest.fixture
-def cache_manager(redis_client):
-    return CacheManager(redis_client=redis_client, prefix="test")
+class FakeAsyncCacheBackend(AsyncCacheBackend):
+    """A simple in-memory fake async backend for testing that wraps the sync backend."""
+
+    def __init__(self, config: ConfigBase):
+        super().__init__(config)
+        self._sync_backend = FakeCacheBackend(config)
+
+    async def set(self, key: str, value, ttl: int = None, dependencies: set = None) -> None:
+        return self._sync_backend.set(key, value, ttl, dependencies)
+
+    async def get(self, key: str):
+        return self._sync_backend.get(key)
+
+    async def delete(self, *keys: str) -> int:
+        return self._sync_backend.delete(*keys)
+
+    async def clear(self, pattern: str = "*") -> int:
+        return self._sync_backend.clear(pattern)
+
+    async def exists(self, key: str) -> bool:
+        return self._sync_backend.exists(key)
+
+    async def ttl(self, key: str) -> int:
+        return self._sync_backend.ttl(key)
+
+    async def invalidate_dependency(self, dependency: str) -> int:
+        return self._sync_backend.invalidate_dependency(dependency)
 
 
-@pytest.fixture
-def event_listener():
-    return Mock()
+class TestGetOrCreateCacheManager:
+    """Test cases for get_or_create_cache_manager function."""
+
+    def test_get_or_create_new_manager(self):
+        """Test creating a new cache manager."""
+        config = ConfigBase()
+        config.cache_enabled = True
+        backend = FakeCacheBackend(config)
+
+        manager = get_or_create_cache_manager(name="test_manager", config=config, backend=backend)
+
+        assert manager is not None
+        assert manager.name == "test_manager"
+        assert isinstance(manager, CacheManager)
+
+    def test_get_existing_manager(self):
+        """Test getting an existing cache manager."""
+        config = ConfigBase()
+        config.cache_enabled = True
+        backend = FakeCacheBackend(config)
+
+        # Create first manager
+        manager1 = get_or_create_cache_manager(name="test_manager", config=config, backend=backend)
+
+        # Get same manager again
+        manager2 = get_or_create_cache_manager(
+            name="test_manager",
+            config=config,  # This should be ignored
+            backend=backend,  # This should be ignored
+        )
+
+        assert manager1 is manager2
+        assert manager1.config is manager2.config
+
+    def test_cache_disabled_returns_none(self):
+        """Test that disabled cache returns None."""
+        config = ConfigBase()
+        config.cache_enabled = False
+
+        with pytest.warns(UserWarning, match="Caching is disabled"):
+            manager = get_or_create_cache_manager(config=config)
+            assert manager is None
+
+    def test_auto_name_from_config(self):
+        """Test that manager name defaults to config prefix when not provided."""
+        config = ConfigBase()
+        config.prefix = "custom_prefix"
+        config.cache_enabled = True
+        backend = FakeCacheBackend(config)
+
+        manager = get_or_create_cache_manager(config=config, backend=backend)
+
+        assert manager.name == "custom_prefix"
 
 
 class TestCacheManager:
-    @patch("simple_dep_cache.manager.create_redis_client_from_config")
-    def test_init_default_redis(self, mock_create_redis):
-        mock_redis = Mock()
-        mock_create_redis.return_value = mock_redis
+    """Test cases for CacheManager class."""
 
-        manager = CacheManager()
+    @pytest.fixture
+    def config(self):
+        """Create a ConfigBase instance for testing."""
+        config = ConfigBase()
+        config.cache_enabled = True
+        return config
 
-        assert manager.prefix == "cache"
-        assert manager.redis is mock_redis
-        mock_create_redis.assert_called_once()
+    @pytest.fixture
+    def backend(self, config):
+        """Create a FakeCacheBackend instance for testing."""
+        return FakeCacheBackend(config)
 
-    def test_init_custom_redis_and_prefix(self, redis_client):
-        manager = CacheManager(redis_client=redis_client, prefix="custom")
-        assert manager.prefix == "custom"
-        assert manager.redis == redis_client
+    @pytest.fixture
+    def manager(self, config, backend):
+        """Create a CacheManager instance for testing."""
+        return CacheManager(config=config, backend=backend)
 
-    def test_cache_key_generation(self, cache_manager):
-        assert cache_manager._cache_key("test") == "test:test"
+    def test_manager_properties(self, manager):
+        """Test manager properties."""
+        assert manager.name == manager.prefix
+        assert manager.config is not None
+        assert manager.backend is not None
 
-    def test_deps_key_generation(self, cache_manager):
-        assert cache_manager._deps_key("dep1") == "test:deps:dep1"
+    def test_set_and_get_round_trip(self, manager):
+        """Test that set/get operations work as expected."""
+        # Set a value
+        manager.set("test_key", "test_value")
 
-    def test_set_simple_value(self, cache_manager):
-        cache_manager.set("key1", "value1")
-        assert cache_manager.get("key1") == "value1"
+        # Get the value back
+        result = manager.get("test_key")
+        assert result == "test_value"
 
-    def test_set_with_ttl(self, cache_manager):
-        cache_manager.set("key1", "value1", ttl=60)
-        assert cache_manager.get("key1") == "value1"
-        assert cache_manager.redis.ttl(cache_manager._cache_key("key1")) <= 60
-
-    def test_set_with_dependencies(self, cache_manager):
-        cache_manager.set("key1", "value1", dependencies={"dep1", "dep2"})
-
-        assert cache_manager.get("key1") == "value1"
-        assert cache_manager.redis.smembers(cache_manager._deps_key("dep1")) == {
-            cache_manager._cache_key("key1")
-        }
-        assert cache_manager.redis.smembers(cache_manager._deps_key("dep2")) == {
-            cache_manager._cache_key("key1")
-        }
-
-    def test_set_with_ttl_and_dependencies(self, cache_manager):
-        cache_manager.set("key1", "value1", ttl=60, dependencies={"dep1"})
-
-        assert cache_manager.get("key1") == "value1"
-        assert cache_manager.redis.smembers(cache_manager._deps_key("dep1")) == {
-            cache_manager._cache_key("key1")
-        }
-        assert 50 < cache_manager.redis.ttl(cache_manager._deps_key("dep1")) <= 60
-
-    def test_set_dependency_ttl_management(self, cache_manager):
-        cache_manager.set("key1", "value1", ttl=60, dependencies={"dep1"})
-        cache_manager.set("key2", "value2", ttl=30, dependencies={"dep1"})
-
-        ttl = cache_manager.redis.ttl(cache_manager._deps_key("dep1"))
-        assert 50 < ttl <= 60
-
-    def test_set_emits_event(self, cache_manager, event_listener):
-        cache_manager.events.on(CacheEventType.SET, event_listener)
-
-        cache_manager.set("key1", "value1", ttl=60, dependencies={"dep1"})
-
-        event_listener.assert_called_once()
-        event = event_listener.call_args[0][0]
-        assert event.event_type == CacheEventType.SET
-        assert event.key == "key1"
-        assert event.value == "value1"
-        assert event.dependencies == {"dep1"}
-        assert event.ttl == 60
-
-    def test_get_existing_value(self, cache_manager):
-        cache_manager.set("key1", "value1")
-        result = cache_manager.get("key1")
-        assert result == "value1"
-
-    def test_get_nonexistent_value(self, cache_manager):
-        result = cache_manager.get("nonexistent")
+    def test_get_nonexistent_key(self, manager):
+        """Test getting a key that doesn't exist."""
+        result = manager.get("nonexistent_key")
         assert result is None
 
-    def test_get_emits_hit_event(self, cache_manager, event_listener):
-        cache_manager.events.on(CacheEventType.HIT, event_listener)
-        cache_manager.set("key1", "value1")
+    def test_set_with_ttl(self, manager):
+        """Test setting a value with TTL."""
+        manager.set("ttl_key", "ttl_value", ttl=60)
 
-        cache_manager.get("key1")
+        # Key should exist
+        assert manager.exists("ttl_key") is True
 
-        event_listener.assert_called_once()
-        event = event_listener.call_args[0][0]
-        assert event.event_type == CacheEventType.HIT
-        assert event.key == "key1"
-        assert event.value == "value1"
+        # TTL should be positive
+        ttl = manager.ttl("ttl_key")
+        assert ttl == 60
 
-    def test_get_emits_miss_event(self, cache_manager, event_listener):
-        cache_manager.events.on(CacheEventType.MISS, event_listener)
+    def test_set_with_dependencies(self, manager):
+        """Test setting a value with dependencies."""
+        manager.set("key1", "value1", dependencies={"dep1", "dep2"})
+        manager.set("key2", "value2", dependencies={"dep1"})
 
-        cache_manager.get("nonexistent")
+        # Both keys should exist
+        assert manager.get("key1") == "value1"
+        assert manager.get("key2") == "value2"
 
-        event_listener.assert_called_once()
-        event = event_listener.call_args[0][0]
-        assert event.event_type == CacheEventType.MISS
-        assert event.key == "nonexistent"
+        # Invalidate dependency
+        count = manager.invalidate_dependency("dep1")
+        assert count == 2  # Both keys depended on dep1
 
-    def test_delete_single_key(self, cache_manager):
-        cache_manager.set("key1", "value1")
-        cache_manager.set("key2", "value2")
+        # Both keys should be invalidated
+        assert manager.get("key1") is None
+        assert manager.get("key2") is None
 
-        count = cache_manager.delete("key1")
+    def test_delete_operations(self, manager):
+        """Test delete operations."""
+        manager.set("key1", "value1")
+        manager.set("key2", "value2")
+        manager.set("key3", "value3")
 
+        # Delete single key
+        count = manager.delete("key1")
         assert count == 1
-        assert cache_manager.get("key1") is None
-        assert cache_manager.get("key2") == "value2"
+        assert manager.get("key1") is None
+        assert manager.get("key2") == "value2"
 
-    def test_delete_multiple_keys(self, cache_manager):
-        cache_manager.set("key1", "value1")
-        cache_manager.set("key2", "value2")
-        cache_manager.set("key3", "value3")
-
-        count = cache_manager.delete("key1", "key2")
-
+        # Delete multiple keys
+        count = manager.delete("key2", "key3")
         assert count == 2
-        assert cache_manager.get("key1") is None
-        assert cache_manager.get("key2") is None
-        assert cache_manager.get("key3") == "value3"
+        assert manager.get("key2") is None
+        assert manager.get("key3") is None
 
-    def test_delete_nonexistent_keys(self, cache_manager):
-        count = cache_manager.delete("nonexistent1", "nonexistent2")
+    def test_clear_operations(self, manager):
+        """Test clear operations."""
+        manager.set("test:1", "value1")
+        manager.set("test:2", "value2")
+        manager.set("other:1", "value3")
+
+        # Clear with pattern
+        count = manager.clear("test:*")
+        assert count == 2
+        assert manager.get("test:1") is None
+        assert manager.get("test:2") is None
+        assert manager.get("other:1") == "value3"
+
+        # Clear all
+        count = manager.clear("*")
+        assert count == 1
+        assert manager.get("other:1") is None
+
+    def test_exists_operations(self, manager):
+        """Test exists operations."""
+        assert manager.exists("nonexistent") is False
+
+        manager.set("existing", "value")
+        assert manager.exists("existing") is True
+
+    def test_ttl_operations(self, manager):
+        """Test TTL operations."""
+        # Non-existent key
+        assert manager.ttl("nonexistent") == -2
+
+        # Key without TTL
+        manager.set("persistent_key", "value")
+        assert manager.ttl("persistent_key") == -1
+
+        # Key with TTL
+        manager.set("ttl_key", "value", ttl=60)
+        ttl = manager.ttl("ttl_key")
+        assert ttl == 60
+
+    def test_invalidate_nonexistent_dependency(self, manager):
+        """Test invalidating a dependency that doesn't exist."""
+        count = manager.invalidate_dependency("nonexistent_dep")
         assert count == 0
 
-    def test_delete_emits_events(self, cache_manager, event_listener):
-        cache_manager.events.on(CacheEventType.DELETE, event_listener)
-        cache_manager.set("key1", "value1")
-        cache_manager.set("key2", "value2")
+    def test_no_sync_backend_error(self, config):
+        """Test error when no sync backend is available."""
+        # Create a mock async backend to satisfy the requirement
+        mock_async_backend = MagicMock()
+        manager = CacheManager(config=config, backend=None, async_backend=mock_async_backend)
 
-        cache_manager.delete("key1", "key2")
+        with pytest.raises(RuntimeError, match="No sync backend available"):
+            manager.set("key", "value")
 
-        assert event_listener.call_count == 2
-        events = [call[0][0] for call in event_listener.call_args_list]
-        assert all(event.event_type == CacheEventType.DELETE for event in events)
-        assert {event.key for event in events} == {"key1", "key2"}
+        with pytest.raises(RuntimeError, match="No sync backend available"):
+            manager.get("key")
 
-    def test_clear_all(self, cache_manager):
-        cache_manager.set("key1", "value1")
-        cache_manager.set("key2", "value2")
+    def test_event_emission_on_set(self, manager):
+        """Test that events are emitted on set operations."""
+        events = []
 
-        count = cache_manager.clear()
+        def event_handler(event):
+            events.append(event)
 
+        manager.on_event(CacheEventType.SET, event_handler)
+
+        manager.set("test_key", "test_value", ttl=60, dependencies={"dep1"})
+
+        assert len(events) == 1
+        event = events[0]
+        assert event.event_type == CacheEventType.SET
+        assert event.key == "test_key"
+        assert event.value == "test_value"
+        assert event.ttl == 60
+        assert event.dependencies == {"dep1"}
+
+    def test_event_emission_on_hit_and_miss(self, manager):
+        """Test that hit/miss events are emitted correctly."""
+        events = []
+
+        def event_handler(event):
+            events.append(event)
+
+        manager.on_event(CacheEventType.HIT, event_handler)
+        manager.on_event(CacheEventType.MISS, event_handler)
+
+        # Set a value
+        manager.set("test_key", "test_value")
+
+        # Get existing value - should emit HIT
+        result = manager.get("test_key")
+        assert result == "test_value"
+
+        # Get non-existing value - should emit MISS
+        result = manager.get("nonexistent")
+        assert result is None
+
+        # Should have one HIT and one MISS
+        hit_events = [e for e in events if e.event_type == CacheEventType.HIT]
+        miss_events = [e for e in events if e.event_type == CacheEventType.MISS]
+
+        assert len(hit_events) == 1
+        assert len(miss_events) == 1
+        assert hit_events[0].key == "test_key"
+        assert miss_events[0].key == "nonexistent"
+
+    def test_event_emission_on_delete(self, manager):
+        """Test that events are emitted on delete operations."""
+        events = []
+
+        def event_handler(event):
+            events.append(event)
+
+        manager.on_event(CacheEventType.DELETE, event_handler)
+
+        manager.set("key1", "value1")
+        manager.set("key2", "value2")
+
+        manager.delete("key1", "key2")
+
+        # Should emit delete events for both keys
+        delete_events = [e for e in events if e.event_type == CacheEventType.DELETE]
+        assert len(delete_events) == 2
+        assert delete_events[0].key == "key1"
+        assert delete_events[1].key == "key2"
+
+    def test_event_emission_on_clear(self, manager):
+        """Test that events are emitted on clear operations."""
+        events = []
+
+        def event_handler(event):
+            events.append(event)
+
+        manager.on_event(CacheEventType.CLEAR, event_handler)
+
+        manager.set("test:1", "value1")
+        manager.set("test:2", "value2")
+
+        count = manager.clear("test:*")
         assert count == 2
-        assert cache_manager.get("key1") is None
-        assert cache_manager.get("key2") is None
 
-    def test_clear_with_pattern(self, cache_manager):
-        cache_manager.set("user:1", "value1")
-        cache_manager.set("user:2", "value2")
-        cache_manager.set("product:1", "value3")
-
-        count = cache_manager.clear("user:*")
-
-        assert count == 2
-        assert cache_manager.get("user:1") is None
-        assert cache_manager.get("user:2") is None
-        assert cache_manager.get("product:1") == "value3"
-
-    def test_clear_emits_event(self, cache_manager, event_listener):
-        cache_manager.events.on(CacheEventType.CLEAR, event_listener)
-        cache_manager.set("key1", "value1")
-
-        cache_manager.clear()
-
-        event_listener.assert_called_once()
-        event = event_listener.call_args[0][0]
+        # Should emit one clear event
+        assert len(events) == 1
+        event = events[0]
         assert event.event_type == CacheEventType.CLEAR
-        assert event.key == "*"
-        assert event.count == 1
+        assert event.key == "test:*"
+        assert event.count == 2
 
-    def test_invalidate_dependency(self, cache_manager):
-        cache_manager.set("key1", "value1", dependencies={"dep1"})
-        cache_manager.set("key2", "value2", dependencies={"dep1", "dep2"})
-        cache_manager.set("key3", "value3", dependencies={"dep2"})
+    def test_event_emission_on_invalidate(self, manager):
+        """Test that events are emitted on dependency invalidation."""
+        events = []
 
-        count = cache_manager.invalidate_dependency("dep1")
+        def event_handler(event):
+            events.append(event)
 
+        manager.on_event(CacheEventType.INVALIDATE, event_handler)
+
+        manager.set("key1", "value1", dependencies={"dep1"})
+        manager.set("key2", "value2", dependencies={"dep1"})
+
+        count = manager.invalidate_dependency("dep1")
         assert count == 2
-        assert cache_manager.get("key1") is None
-        assert cache_manager.get("key2") is None
-        assert cache_manager.get("key3") == "value3"
-        assert not cache_manager.redis.exists(cache_manager._deps_key("dep1"))
 
-    def test_invalidate_nonexistent_dependency(self, cache_manager):
-        count = cache_manager.invalidate_dependency("nonexistent")
-        assert count == 0
-
-    def test_invalidate_dependency_emits_event(self, cache_manager, event_listener):
-        cache_manager.events.on(CacheEventType.INVALIDATE, event_listener)
-        cache_manager.set("key1", "value1", dependencies={"dep1"})
-
-        cache_manager.invalidate_dependency("dep1")
-
-        event_listener.assert_called_once()
-        event = event_listener.call_args[0][0]
+        # Should emit one invalidate event
+        assert len(events) == 1
+        event = events[0]
         assert event.event_type == CacheEventType.INVALIDATE
         assert event.key == "dep1"
-        assert event.count == 1
+        assert event.count == 2
 
-    def test_exists_true(self, cache_manager):
-        cache_manager.set("key1", "value1")
-        assert cache_manager.exists("key1") is True
+    def test_event_callback_management(self, manager):
+        """Test adding and removing event callbacks."""
+        events = []
 
-    def test_exists_false(self, cache_manager):
-        assert cache_manager.exists("nonexistent") is False
+        def event_handler(event):
+            events.append(event)
 
-    def test_ttl_with_expiration(self, cache_manager):
-        cache_manager.set("key1", "value1", ttl=60)
-        ttl = cache_manager.ttl("key1")
-        assert 50 < ttl <= 60
+        # Add callback
+        manager.on_event(CacheEventType.SET, event_handler)
 
-    def test_ttl_without_expiration(self, cache_manager):
-        cache_manager.set("key1", "value1")
-        ttl = cache_manager.ttl("key1")
-        assert ttl == -1
+        manager.set("test_key", "test_value")
+        assert len(events) == 1
 
-    def test_ttl_nonexistent_key(self, cache_manager):
-        ttl = cache_manager.ttl("nonexistent")
-        assert ttl == -2
+        # Remove callback
+        removed = manager.remove_event_callback(CacheEventType.SET, event_handler)
+        assert removed is True
 
-    def test_complex_data_types(self, cache_manager):
-        test_data = {
+        manager.set("test_key2", "test_value2")
+        assert len(events) == 1  # Should not have increased
+
+        # Try to remove non-existent callback
+        removed = manager.remove_event_callback(CacheEventType.SET, event_handler)
+        assert removed is False
+
+    def test_all_events_callback(self, manager):
+        """Test callback that listens to all events."""
+        events = []
+
+        def all_events_handler(event):
+            events.append(event)
+
+        manager.on_all_events(all_events_handler)
+
+        # Trigger different types of events
+        manager.set("key1", "value1")
+        manager.get("key1")  # HIT
+        manager.get("nonexistent")  # MISS
+        manager.delete("key1")
+
+        # Should have captured all events
+        event_types = [e.event_type for e in events]
+        assert CacheEventType.SET in event_types
+        assert CacheEventType.HIT in event_types
+        assert CacheEventType.MISS in event_types
+        assert CacheEventType.DELETE in event_types
+
+    def test_clear_all_event_callbacks(self, manager):
+        """Test clearing all event callbacks."""
+        events = []
+
+        def event_handler(event):
+            events.append(event)
+
+        # Add callbacks for different events
+        manager.on_event(CacheEventType.SET, event_handler)
+        manager.on_event(CacheEventType.DELETE, event_handler)
+        manager.on_all_events(event_handler)
+
+        # Clear all callbacks
+        manager.clear_all_event_callbacks()
+
+        # Trigger events - should not be captured
+        manager.set("test_key", "test_value")
+        manager.delete("test_key")
+
+        assert len(events) == 0
+
+    def test_complex_value_serialization(self, manager):
+        """Test serialization of complex values."""
+        complex_data = {
+            "string": "test",
+            "number": 42,
             "list": [1, 2, 3],
-            "dict": {"nested": "value"},
-            "int": 42,
-            "float": 3.14,
-            "bool": True,
+            "nested": {"key": "value"},
+            "boolean": True,
             "none": None,
         }
 
-        cache_manager.set("complex", test_data)
-        result = cache_manager.get("complex")
-        assert result == test_data
+        manager.set("complex_key", complex_data)
+        result = manager.get("complex_key")
 
-    def test_dependency_chain_invalidation(self, cache_manager):
-        cache_manager.set("base", "value", dependencies={"dep1"})
-        cache_manager.set("derived1", "value", dependencies={"base"})
-        cache_manager.set("derived2", "value", dependencies={"derived1"})
+        assert result == complex_data
 
-        cache_manager.invalidate_dependency("dep1")
+    def test_error_handling(self, manager):
+        """Test error handling in manager operations."""
+        # This mainly tests that operations don't crash unexpectedly
+        # The underlying backend tests cover more detailed error scenarios
 
-        assert cache_manager.get("base") is None
-        assert cache_manager.get("derived1") == "value"
-        assert cache_manager.get("derived2") == "value"
+        manager.set("test", "value")
+        result = manager.get("test")
+        assert result == "value"
 
-    def test_multiple_dependencies_same_key(self, cache_manager):
-        cache_manager.set("key1", "value1", dependencies={"dep1", "dep2", "dep3"})
+        # Operations on non-existent keys should be safe
+        assert manager.get("nonexistent") is None
+        assert manager.exists("nonexistent") is False
+        assert manager.ttl("nonexistent") == -2
 
-        cache_manager.invalidate_dependency("dep2")
+    def test_disabled_cache_behavior(self):
+        """Test behavior when cache is disabled."""
+        config = ConfigBase()
+        config.cache_enabled = False
+        backend = FakeCacheBackend(config)
 
-        assert cache_manager.get("key1") is None
-        assert not cache_manager.redis.exists(cache_manager._deps_key("dep2"))
-        assert cache_manager.redis.exists(cache_manager._deps_key("dep1"))
-        assert cache_manager.redis.exists(cache_manager._deps_key("dep3"))
+        with pytest.raises(RuntimeError, match="Cache is disabled"):
+            backend.set("key", "value")
 
-    def test_event_emission_timing(self, cache_manager):
+        with pytest.raises(RuntimeError, match="Cache is disabled"):
+            backend.get("key")
+
+
+class TestAsyncCacheManager:
+    """Test cases for CacheManager async operations."""
+
+    @pytest.fixture
+    def config(self):
+        """Create a ConfigBase instance for testing."""
+        config = ConfigBase()
+        config.cache_enabled = True
+        return config
+
+    @pytest.fixture
+    def async_backend(self, config):
+        """Create a FakeAsyncCacheBackend instance for testing."""
+        return FakeAsyncCacheBackend(config)
+
+    @pytest.fixture
+    def async_manager(self, config, async_backend):
+        """Create a CacheManager instance with async backend for testing."""
+        return CacheManager(config=config, backend=None, async_backend=async_backend)
+
+    @pytest.mark.asyncio
+    async def test_async_set_and_get_round_trip(self, async_manager):
+        """Test that async set/get operations work as expected."""
+        # Set a value
+        await async_manager.aset("test_key", "test_value")
+
+        # Get the value back
+        result = await async_manager.aget("test_key")
+        assert result == "test_value"
+
+    @pytest.mark.asyncio
+    async def test_async_get_nonexistent_key(self, async_manager):
+        """Test async getting a key that doesn't exist."""
+        result = await async_manager.aget("nonexistent_key")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_async_set_with_ttl(self, async_manager):
+        """Test async setting a value with TTL."""
+        await async_manager.aset("ttl_key", "ttl_value", ttl=60)
+
+        # Key should exist
+        assert await async_manager.aexists("ttl_key") is True
+
+        # TTL should be positive
+        ttl = await async_manager.attl("ttl_key")
+        assert ttl == 60
+
+    @pytest.mark.asyncio
+    async def test_async_set_with_dependencies(self, async_manager):
+        """Test async setting a value with dependencies."""
+        await async_manager.aset("key1", "value1", dependencies={"dep1", "dep2"})
+        await async_manager.aset("key2", "value2", dependencies={"dep1"})
+
+        # Both keys should exist
+        assert await async_manager.aget("key1") == "value1"
+        assert await async_manager.aget("key2") == "value2"
+
+        # Invalidate dependency
+        count = await async_manager.ainvalidate_dependency("dep1")
+        assert count == 2  # Both keys depended on dep1
+
+        # Both keys should be invalidated
+        assert await async_manager.aget("key1") is None
+        assert await async_manager.aget("key2") is None
+
+    @pytest.mark.asyncio
+    async def test_async_delete_operations(self, async_manager):
+        """Test async delete operations."""
+        await async_manager.aset("key1", "value1")
+        await async_manager.aset("key2", "value2")
+        await async_manager.aset("key3", "value3")
+
+        # Delete single key
+        count = await async_manager.adelete("key1")
+        assert count == 1
+        assert await async_manager.aget("key1") is None
+        assert await async_manager.aget("key2") == "value2"
+
+        # Delete multiple keys
+        count = await async_manager.adelete("key2", "key3")
+        assert count == 2
+        assert await async_manager.aget("key2") is None
+        assert await async_manager.aget("key3") is None
+
+    @pytest.mark.asyncio
+    async def test_async_clear_operations(self, async_manager):
+        """Test async clear operations."""
+        await async_manager.aset("test:1", "value1")
+        await async_manager.aset("test:2", "value2")
+        await async_manager.aset("other:1", "value3")
+
+        # Clear with pattern
+        count = await async_manager.aclear("test:*")
+        assert count == 2
+        assert await async_manager.aget("test:1") is None
+        assert await async_manager.aget("test:2") is None
+        assert await async_manager.aget("other:1") == "value3"
+
+        # Clear all
+        count = await async_manager.aclear("*")
+        assert count == 1
+        assert await async_manager.aget("other:1") is None
+
+    @pytest.mark.asyncio
+    async def test_async_exists_operations(self, async_manager):
+        """Test async exists operations."""
+        assert await async_manager.aexists("nonexistent") is False
+
+        await async_manager.aset("existing", "value")
+        assert await async_manager.aexists("existing") is True
+
+    @pytest.mark.asyncio
+    async def test_async_ttl_operations(self, async_manager):
+        """Test async TTL operations."""
+        # Non-existent key
+        assert await async_manager.attl("nonexistent") == -2
+
+        # Key without TTL
+        await async_manager.aset("persistent_key", "value")
+        assert await async_manager.attl("persistent_key") == -1
+
+        # Key with TTL
+        await async_manager.aset("ttl_key", "value", ttl=60)
+        ttl = await async_manager.attl("ttl_key")
+        assert ttl == 60
+
+    @pytest.mark.asyncio
+    async def test_async_invalidate_nonexistent_dependency(self, async_manager):
+        """Test async invalidating a dependency that doesn't exist."""
+        count = await async_manager.ainvalidate_dependency("nonexistent_dep")
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_backend_error(self, config):
+        """Test error when no backend is available."""
+        # Create a manager with no backends at all
+        with pytest.raises(
+            ValueError, match="Must specify either 'backend', 'async_backend', or both"
+        ):
+            CacheManager(config=config, backend=None, async_backend=None)
+
+    @pytest.mark.asyncio
+    async def test_async_event_emission_on_set(self, async_manager):
+        """Test that events are emitted on async set operations."""
         events = []
 
-        def capture_event(event):
-            events.append((event.event_type, time.time()))
+        def event_handler(event):
+            events.append(event)
 
-        cache_manager.events.on(CacheEventType.SET, capture_event)
-        cache_manager.events.on(CacheEventType.HIT, capture_event)
-        cache_manager.events.on(CacheEventType.MISS, capture_event)
+        async_manager.on_event(CacheEventType.SET, event_handler)
 
-        start_time = time.time()
-        cache_manager.set("key1", "value1")
-        cache_manager.get("key1")
-        cache_manager.get("nonexistent")
-        end_time = time.time()
+        await async_manager.aset("test_key", "test_value", ttl=60, dependencies={"dep1"})
 
-        assert len(events) == 3
-        assert events[0][0] == CacheEventType.SET
-        assert events[1][0] == CacheEventType.HIT
-        assert events[2][0] == CacheEventType.MISS
+        assert len(events) == 1
+        event = events[0]
+        assert event.event_type == CacheEventType.SET
+        assert event.key == "test_key"
+        assert event.value == "test_value"
+        assert event.ttl == 60
+        assert event.dependencies == {"dep1"}
 
-        for _, timestamp in events:
-            assert start_time <= timestamp <= end_time
+    @pytest.mark.asyncio
+    async def test_async_event_emission_on_hit_and_miss(self, async_manager):
+        """Test that hit/miss events are emitted correctly for async operations."""
+        events = []
 
+        def event_handler(event):
+            events.append(event)
 
-class TestDefaultCacheManager:
-    def test_get_default_cache_manager_returns_same_instance(self):
-        """Test that get_default_cache_manager returns the same instance on multiple calls."""
-        manager1 = get_default_cache_manager()
-        manager2 = get_default_cache_manager()
+        async_manager.on_event(CacheEventType.HIT, event_handler)
+        async_manager.on_event(CacheEventType.MISS, event_handler)
 
-        assert manager1 is manager2
-        assert isinstance(manager1, CacheManager)
-        assert manager1.prefix == "cache"
+        # Set a value
+        await async_manager.aset("test_key", "test_value")
 
-    @patch("simple_dep_cache.manager.create_redis_client_from_config")
-    def test_get_default_cache_manager_creates_redis_client(self, mock_create_redis):
-        """Test that default manager creates Redis client from config."""
-        mock_redis = Mock()
-        mock_create_redis.return_value = mock_redis
+        # Get existing value - should emit HIT
+        result = await async_manager.aget("test_key")
+        assert result == "test_value"
 
-        # Reset the global state by accessing the module's globals
-        import simple_dep_cache.manager as manager_module
+        # Get non-existing value - should emit MISS
+        result = await async_manager.aget("nonexistent")
+        assert result is None
 
-        manager_module._default_sync_manager = None
+        # Should have one HIT and one MISS
+        hit_events = [e for e in events if e.event_type == CacheEventType.HIT]
+        miss_events = [e for e in events if e.event_type == CacheEventType.MISS]
 
-        manager = get_default_cache_manager()
+        assert len(hit_events) == 1
+        assert len(miss_events) == 1
+        assert hit_events[0].key == "test_key"
+        assert miss_events[0].key == "nonexistent"
 
-        assert manager.redis is mock_redis
-        mock_create_redis.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_async_event_emission_on_delete(self, async_manager):
+        """Test that events are emitted on async delete operations."""
+        events = []
 
-    def test_get_default_cache_manager_thread_safety(self):
-        """Test that default manager creation is thread-safe."""
-        import threading
+        def event_handler(event):
+            events.append(event)
 
-        import simple_dep_cache.manager as manager_module
+        async_manager.on_event(CacheEventType.DELETE, event_handler)
 
-        # Reset the global state
-        manager_module._default_sync_manager = None
+        await async_manager.aset("key1", "value1")
+        await async_manager.aset("key2", "value2")
 
-        managers = []
-        barrier = threading.Barrier(5)
+        await async_manager.adelete("key1", "key2")
 
-        def create_manager():
-            barrier.wait()  # Ensure all threads start simultaneously
-            managers.append(get_default_cache_manager())
+        # Should emit delete events for both keys
+        delete_events = [e for e in events if e.event_type == CacheEventType.DELETE]
+        assert len(delete_events) == 2
+        assert delete_events[0].key == "key1"
+        assert delete_events[1].key == "key2"
 
-        threads = [threading.Thread(target=create_manager) for _ in range(5)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+    @pytest.mark.asyncio
+    async def test_async_event_emission_on_clear(self, async_manager):
+        """Test that events are emitted on async clear operations."""
+        events = []
 
-        # All managers should be the same instance
-        assert len({id(manager) for manager in managers}) == 1
+        def event_handler(event):
+            events.append(event)
+
+        async_manager.on_event(CacheEventType.CLEAR, event_handler)
+
+        await async_manager.aset("test:1", "value1")
+        await async_manager.aset("test:2", "value2")
+
+        count = await async_manager.aclear("test:*")
+        assert count == 2
+
+        # Should emit one clear event
+        assert len(events) == 1
+        event = events[0]
+        assert event.event_type == CacheEventType.CLEAR
+        assert event.key == "test:*"
+        assert event.count == 2
+
+    @pytest.mark.asyncio
+    async def test_async_event_emission_on_invalidate(self, async_manager):
+        """Test that events are emitted on async dependency invalidation."""
+        events = []
+
+        def event_handler(event):
+            events.append(event)
+
+        async_manager.on_event(CacheEventType.INVALIDATE, event_handler)
+
+        await async_manager.aset("key1", "value1", dependencies={"dep1"})
+        await async_manager.aset("key2", "value2", dependencies={"dep1"})
+
+        count = await async_manager.ainvalidate_dependency("dep1")
+        assert count == 2
+
+        # Should emit one invalidate event
+        assert len(events) == 1
+        event = events[0]
+        assert event.event_type == CacheEventType.INVALIDATE
+        assert event.key == "dep1"
+        assert event.count == 2
+
+    @pytest.mark.asyncio
+    async def test_async_complex_value_serialization(self, async_manager):
+        """Test async serialization of complex values."""
+        complex_data = {
+            "string": "test",
+            "number": 42,
+            "list": [1, 2, 3],
+            "nested": {"key": "value"},
+            "boolean": True,
+            "none": None,
+        }
+
+        await async_manager.aset("complex_key", complex_data)
+        result = await async_manager.aget("complex_key")
+
+        assert result == complex_data
+
+    @pytest.mark.asyncio
+    async def test_async_error_handling(self, async_manager):
+        """Test error handling in async manager operations."""
+        # This mainly tests that operations don't crash unexpectedly
+        # The underlying backend tests cover more detailed error scenarios
+
+        await async_manager.aset("test", "value")
+        result = await async_manager.aget("test")
+        assert result == "value"
+
+        # Operations on non-existent keys should be safe
+        assert await async_manager.aget("nonexistent") is None
+        assert await async_manager.aexists("nonexistent") is False
+        assert await async_manager.attl("nonexistent") == -2
+
+    @pytest.mark.asyncio
+    async def test_async_disabled_cache_behavior(self):
+        """Test behavior when cache is disabled for async operations."""
+        config = ConfigBase()
+        config.cache_enabled = False
+        async_backend = FakeAsyncCacheBackend(config)
+
+        with pytest.raises(RuntimeError, match="Cache is disabled"):
+            await async_backend.set("key", "value")
+
+        with pytest.raises(RuntimeError, match="Cache is disabled"):
+            await async_backend.get("key")
+
+    @pytest.mark.asyncio
+    async def test_sync_fallback_warning(self, config):
+        """Test that using async methods with sync backend emits warnings."""
+        # Create manager with only sync backend
+        backend = FakeCacheBackend(config)
+        manager = CacheManager(config=config, backend=backend, async_backend=None)
+
+        with pytest.warns(UserWarning, match="Using sync backend with async method"):
+            await manager.aset("test_key", "test_value")
+
+        with pytest.warns(UserWarning, match="Using sync backend with async method"):
+            result = await manager.aget("test_key")
+            assert result == "test_value"
+
+    @pytest.mark.asyncio
+    async def test_aclose_operation(self, async_manager):
+        """Test closing the async backend connection."""
+        # Should not raise an exception
+        await async_manager.aclose()

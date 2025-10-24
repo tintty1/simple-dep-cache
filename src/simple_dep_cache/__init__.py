@@ -8,7 +8,6 @@ from .decorators import cache_with_deps
 from .events import CacheEvent, CacheEventType, StatsCollector, create_logger_callback
 from .factories import (
     create_async_backend_from_config,
-    create_async_cache_manager,
     create_async_redis_backend,
     create_async_redis_client_from_config,
     create_backend_from_config,
@@ -42,7 +41,6 @@ __all__ = [
     "BaseSerializer",
     "JSONSerializer",
     "create_cache_manager",
-    "create_async_cache_manager",
     "create_redis_backend",
     "create_async_redis_backend",
     "create_redis_client_from_config",
