@@ -55,6 +55,7 @@ def get_or_create_cache_manager(
     return manager
 
 
+# this class should not be used directly, use get_or_create_cache_manager() instead
 class CacheManager:
     """Unified cache manager with dependency tracking using pluggable backend."""
 
@@ -65,6 +66,9 @@ class CacheManager:
         backend: CacheBackend | None = None,
         async_backend: AsyncCacheBackend | None = None,
     ):
+        # if `name` was provided,
+        # `config.prefix` should be set to non-default value to avoid conflict
+        # if it's not provided, use `config.prefix` as name
         self._name = name
         self.config = config
         # At least one backend must be provided
@@ -449,4 +453,3 @@ class CacheManager:
                 UserWarning,
                 stacklevel=2,
             )
-        # No error needed for aclose - it's fine if there's no backend to close

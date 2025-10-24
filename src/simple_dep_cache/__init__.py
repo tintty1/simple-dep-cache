@@ -15,6 +15,7 @@ from .factories import (
     create_redis_backend,
     create_redis_client_from_config,
 )
+from .fakes import FakeAsyncCacheBackend, FakeCacheBackend
 from .manager import CacheManager
 from .redis_backends import AsyncRedisCacheBackend, RedisCacheBackend
 from .types import BaseSerializer, CacheValue, JSONSerializer
@@ -47,4 +48,6 @@ __all__ = [
     "create_async_redis_client_from_config",
     "create_backend_from_config",
     "create_async_backend_from_config",
+    "FakeCacheBackend",
+    "FakeAsyncCacheBackend",
 ]

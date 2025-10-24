@@ -264,7 +264,3 @@ def cache_with_deps(
             return sync_wrapper
 
     return decorator
-
-
-# Alias for backward compatibility
-async_cache_with_deps = cache_with_deps
