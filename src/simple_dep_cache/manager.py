@@ -12,7 +12,7 @@ from .types import CacheValue
 
 _manager_lock = threading.Lock()
 
-_managers = {}
+_managers: dict[str, "CacheManager"] = {}
 
 
 def get_or_create_cache_manager(
@@ -28,12 +28,14 @@ def get_or_create_cache_manager(
     manager = None
 
     with _manager_lock:
-        if name is not None and name in _managers:
+        if config is None:
+            config = RedisConfig()
+        if name is None:
+            name = config.prefix
+        if name in _managers:
             # manager already exists, ignore other params
             manager = _managers[name]
             config = manager.config
-        if config is None:
-            config = RedisConfig()
         if not config.cache_enabled:
             import warnings
 

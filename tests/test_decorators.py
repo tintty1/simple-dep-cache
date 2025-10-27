@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from simple_dep_cache import add_dependency
 from simple_dep_cache.context import reset as reset_context
 from simple_dep_cache.decorators import cache_with_deps
 from simple_dep_cache.fakes import FakeAsyncCacheBackend, FakeCacheBackend
@@ -45,6 +46,20 @@ def cache_manager(fake_backend):
 
 
 @pytest.fixture
+def default_cache_manager(fake_backend):
+    """Provide a cache manager with fake backend."""
+    import simple_dep_cache.manager as manager_module
+    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
+
+    config = RedisConfig()
+    manager = get_or_create_cache_manager(backend=fake_backend, config=config)
+    return manager
+
+
+@pytest.fixture
 def async_cache_manager(fake_async_backend):
     """Provide an async cache manager with fake async backend."""
     import simple_dep_cache.manager as manager_module
@@ -55,6 +70,20 @@ def async_cache_manager(fake_async_backend):
 
     config = RedisConfig()
     config.prefix = "test"
+    manager = get_or_create_cache_manager(async_backend=fake_async_backend, config=config)
+    return manager
+
+
+@pytest.fixture
+def default_async_cache_manager(fake_async_backend):
+    """Provide an async cache manager with fake async backend."""
+    import simple_dep_cache.manager as manager_module
+    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
+
+    config = RedisConfig()
     manager = get_or_create_cache_manager(async_backend=fake_async_backend, config=config)
     return manager
 
@@ -86,12 +115,54 @@ class TestCacheWithDepsBasicFunctionality:
         assert result2 == {"id": 123, "name": "User 123"}
         assert call_count == 1  # No additional calls
 
+    def test_sync_function_caching_default_manager(self, default_cache_manager):
+        """Test basic sync function caching."""
+        call_count = 0
+
+        @cache_with_deps()
+        def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # First call should execute function
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+
+        # Second call should return cached result
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+
     @pytest.mark.asyncio
     async def test_async_function_caching(self, async_cache_manager):
         """Test basic async function caching."""
         call_count = 0
 
         @cache_with_deps(name="test")
+        async def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0)  # Simulate async operation
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # First call should execute function
+        result1 = await get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+
+        # Second call should return cached result
+        result2 = await get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+
+    @pytest.mark.asyncio
+    async def test_async_function_caching_default_manager(self, default_async_cache_manager):
+        """Test basic async function caching."""
+        call_count = 0
+
+        @cache_with_deps()
         async def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
@@ -148,7 +219,97 @@ class TestCacheWithDepsBasicFunctionality:
         assert call_count == 1
 
         # Invalidate dependency and call again
-        # Note: get_or_create_cache_manager is already mocked by the fixture
+        from simple_dep_cache.manager import get_or_create_cache_manager
+
+        manager = get_or_create_cache_manager("test")
+        assert manager is not None
+        manager.invalidate_dependency("user:123")
+        result3 = get_user_posts(123)
+        assert call_count == 2  # Should re-execute
+
+    @pytest.mark.asyncio
+    async def test_async_function_with_dependencies(self, async_cache_manager):
+        """Test function with explicit dependencies."""
+        call_count = 0
+
+        @cache_with_deps(name="test", dependencies={"user:123"})
+        async def get_user_posts(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            return [{"id": 1, "title": "Post 1"}]
+
+        # First call
+        result1 = await get_user_posts(123)
+        assert result1 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Second call should use cache
+        result2 = await get_user_posts(123)
+        assert result2 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Invalidate dependency and call again
+        from simple_dep_cache.manager import get_or_create_cache_manager
+
+        manager = get_or_create_cache_manager("test")
+        assert manager is not None
+        await manager.ainvalidate_dependency("user:123")
+        result3 = await get_user_posts(123)
+        assert call_count == 2  # Should re-execute
+
+    def test_function_with_dependencies_default_manager(self, default_cache_manager):
+        """Test function with explicit dependencies."""
+        call_count = 0
+
+        @cache_with_deps(dependencies={"user:123"})
+        def get_user_posts(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            return [{"id": 1, "title": "Post 1"}]
+
+        # First call
+        result1 = get_user_posts(123)
+        assert result1 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Second call should use cache
+        result2 = get_user_posts(123)
+        assert result2 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Invalidate dependency and call again
+        from simple_dep_cache.manager import get_or_create_cache_manager
+
+        manager = get_or_create_cache_manager()
+        assert manager is not None
+        manager.invalidate_dependency("user:123")
+        result3 = get_user_posts(123)
+        assert call_count == 2  # Should re-execute
+
+    def test_function_with_dependencies_using_add_dependency(self, cache_manager):
+        """Test function with explicit dependencies."""
+        call_count = 0
+
+        @cache_with_deps(name="test")
+        def get_user_posts(user_id: int):
+            nonlocal call_count
+
+            add_dependency("user:123")
+
+            call_count += 1
+            return [{"id": 1, "title": "Post 1"}]
+
+        # First call
+        result1 = get_user_posts(123)
+        assert result1 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Second call should use cache
+        result2 = get_user_posts(123)
+        assert result2 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Invalidate dependency and call again
         from simple_dep_cache.manager import get_or_create_cache_manager
 
         manager = get_or_create_cache_manager("test")
