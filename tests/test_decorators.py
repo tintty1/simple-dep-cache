@@ -1,1679 +1,1042 @@
+"""Tests for simple_dep_cache.decorators module."""
+
 import asyncio
-import logging
-from unittest.mock import patch
 
-import fakeredis
-import fakeredis.aioredis
 import pytest
-import pytest_asyncio
 
-from simple_dep_cache.context import (
-    add_dependency,
-    get_current_dependencies,
-    set_cache_ttl,
-    set_current_cache_key,
-    set_current_dependencies,
-)
-from simple_dep_cache.decorators import (
-    _get_cache_key_for_arg,
-    async_cache_with_deps,
-    cache_with_deps,
-)
-from simple_dep_cache.manager import AsyncCacheManager, CacheManager
+from simple_dep_cache import add_dependency
+from simple_dep_cache.context import reset as reset_context
+from simple_dep_cache.decorators import cache_with_deps
+from simple_dep_cache.fakes import FakeAsyncCacheBackend, FakeCacheBackend
 
 
 @pytest.fixture
-def redis_client():
-    return fakeredis.FakeRedis(decode_responses=True)
+def fake_backend():
+    """Provide a fake cache backend for testing."""
+    from simple_dep_cache.fakes import FakeConfig
+
+    config = FakeConfig(prefix="test")
+    return FakeCacheBackend(config)
 
 
 @pytest.fixture
-def cache_manager(redis_client):
-    return CacheManager(redis_client=redis_client, prefix="test")
+def fake_async_backend():
+    """Provide a fake async cache backend for testing."""
+    from simple_dep_cache.fakes import FakeConfig
+
+    config = FakeConfig(prefix="test")
+    return FakeAsyncCacheBackend(config)
 
 
-@pytest_asyncio.fixture
-async def async_redis_client():
-    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    yield client
-    await client.aclose()
+@pytest.fixture
+def cache_manager(fake_backend):
+    """Provide a cache manager with fake backend."""
+    import simple_dep_cache.manager as manager_module
+    from simple_dep_cache.fakes import FakeConfig
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
+
+    config = FakeConfig(prefix="test")
+    manager = get_or_create_cache_manager(backend=fake_backend, config=config)
+    return manager
 
 
-@pytest_asyncio.fixture
-async def async_cache_manager(async_redis_client):
-    manager = AsyncCacheManager(redis_client=async_redis_client, prefix="test")
-    yield manager
-    await manager.close()
+@pytest.fixture
+def default_cache_manager(fake_backend):
+    """Provide a cache manager with fake backend."""
+    import simple_dep_cache.manager as manager_module
+    from simple_dep_cache.fakes import FakeConfig
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
+
+    config = FakeConfig()
+    manager = get_or_create_cache_manager(backend=fake_backend, config=config)
+    return manager
 
 
-class TestCacheWithDeps:
-    def test_basic_caching(self, cache_manager):
+@pytest.fixture
+def async_cache_manager(fake_async_backend):
+    """Provide an async cache manager with fake async backend."""
+    import simple_dep_cache.manager as manager_module
+    from simple_dep_cache.fakes import FakeConfig
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
+
+    config = FakeConfig(prefix="test")
+    manager = get_or_create_cache_manager(async_backend=fake_async_backend, config=config)
+    return manager
+
+
+@pytest.fixture
+def default_async_cache_manager(fake_async_backend):
+    """Provide an async cache manager with fake async backend."""
+    import simple_dep_cache.manager as manager_module
+    from simple_dep_cache.fakes import FakeConfig
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
+
+    config = FakeConfig()
+    manager = get_or_create_cache_manager(async_backend=fake_async_backend, config=config)
+    return manager
+
+
+class TestCacheWithDepsBasicFunctionality:
+    """Test basic functionality of cache_with_deps decorator."""
+
+    def setup_method(self):
+        """Reset context before each test."""
+        reset_context()
+
+    def test_sync_function_caching(self, cache_manager):
+        """Test basic sync function caching."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x):
+        @cache_with_deps(name="test")
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
+        # First call should execute function
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-    @patch("simple_dep_cache.manager.create_redis_client_from_config")
-    def test_default_cache_manager(self, mock_create_redis):
-        # Reset global manager state for clean test
-        import simple_dep_cache.manager as manager_module
+        # Second call should return cached result
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
 
-        manager_module._default_sync_manager = None
-
-        mock_redis = fakeredis.FakeRedis(decode_responses=True)
-        mock_create_redis.return_value = mock_redis
+    def test_sync_function_caching_default_manager(self, default_cache_manager):
+        """Test basic sync function caching."""
         call_count = 0
 
         @cache_with_deps()
-        def expensive_function(x):
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
+        # First call should execute function
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-    def test_caching_with_ttl(self, cache_manager):
+        # Second call should return cached result
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+
+    @pytest.mark.asyncio
+    async def test_async_function_caching(self, async_cache_manager):
+        """Test basic async function caching."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager, ttl=60)
-        def expensive_function(x):
+        @cache_with_deps(name="test")
+        async def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            await asyncio.sleep(0)  # Simulate async operation
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
+        # First call should execute function
+        result1 = await get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-    def test_caching_with_key_prefix(self, cache_manager):
+        # Second call should return cached result
+        result2 = await get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+
+    @pytest.mark.asyncio
+    async def test_async_function_caching_default_manager(self, default_async_cache_manager):
+        """Test basic async function caching."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager, key_prefix="prefix")
-        def expensive_function(x):
+        @cache_with_deps()
+        async def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            await asyncio.sleep(0)  # Simulate async operation
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
+        # First call should execute function
+        result1 = await get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-    def test_caching_with_additional_dependencies(self, cache_manager):
+        # Second call should return cached result
+        result2 = await get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+
+    def test_function_with_ttl(self, cache_manager):
+        """Test function with TTL."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager, dependencies={"external_dep"})
-        def expensive_function(x):
+        @cache_with_deps(name="test", ttl=60)
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
+        # Call function
+        result = get_user(123)
+        assert result == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-        cache_manager.invalidate_dependency("external_dep")
-        result3 = expensive_function(5)
-        assert result3 == 10
-        assert call_count == 2
-
-    def test_caching_with_tracked_dependencies(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            add_dependency("tracked_dep")
-            return x * 2
-
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
+        # Call again with same args, should use cache
+        result = get_user(123)
         assert call_count == 1
 
-        cache_manager.invalidate_dependency("tracked_dep")
-        result3 = expensive_function(5)
-        assert result3 == 10
-        assert call_count == 2
-
-    def test_caching_with_combined_dependencies(self, cache_manager):
+    def test_function_with_dependencies(self, cache_manager):
+        """Test function with explicit dependencies."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager, dependencies={"static_dep"})
-        def expensive_function(x):
+        @cache_with_deps(name="test", dependencies={"user:123"})
+        def get_user_posts(user_id: int):
             nonlocal call_count
             call_count += 1
-            add_dependency("dynamic_dep")
-            return x * 2
+            return [{"id": 1, "title": "Post 1"}]
 
-        result1 = expensive_function(5)
-        assert result1 == 10
+        # First call
+        result1 = get_user_posts(123)
+        assert result1 == [{"id": 1, "title": "Post 1"}]
         assert call_count == 1
 
-        cache_manager.invalidate_dependency("static_dep")
-        result2 = expensive_function(5)
-        assert result2 == 10
-        assert call_count == 2
+        # Second call should use cache
+        result2 = get_user_posts(123)
+        assert result2 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
 
-        result3 = expensive_function(5)
-        assert call_count == 2
+        # Invalidate dependency and call again
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
-        cache_manager.invalidate_dependency("dynamic_dep")
-        result4 = expensive_function(5)
-        assert result4 == 10
-        assert call_count == 3
+        manager = get_or_create_cache_manager("test")
+        assert manager is not None
+        manager.invalidate_dependency("user:123")
+        result3 = get_user_posts(123)
+        assert call_count == 2  # Should re-execute
 
-    def test_different_arguments_different_cache(self, cache_manager):
+    @pytest.mark.asyncio
+    async def test_async_function_with_dependencies(self, async_cache_manager):
+        """Test function with explicit dependencies."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x):
+        @cache_with_deps(name="test", dependencies={"user:123"})
+        async def get_user_posts(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            return [{"id": 1, "title": "Post 1"}]
 
-        result1 = expensive_function(5)
-        result2 = expensive_function(10)
-        result3 = expensive_function(5)
+        # First call
+        result1 = await get_user_posts(123)
+        assert result1 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
 
-        assert result1 == 10
-        assert result2 == 20
-        assert result3 == 10
-        assert call_count == 2
+        # Second call should use cache
+        result2 = await get_user_posts(123)
+        assert result2 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
 
-    def test_kwargs_in_cache_key(self, cache_manager):
+        # Invalidate dependency and call again
+        from simple_dep_cache.manager import get_or_create_cache_manager
+
+        manager = get_or_create_cache_manager("test")
+        assert manager is not None
+        await manager.ainvalidate_dependency("user:123")
+        result3 = await get_user_posts(123)
+        assert call_count == 2  # Should re-execute
+
+    def test_function_with_dependencies_default_manager(self, default_cache_manager):
+        """Test function with explicit dependencies."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x, multiplier=2):
+        @cache_with_deps(dependencies={"user:123"})
+        def get_user_posts(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * multiplier
+            return [{"id": 1, "title": "Post 1"}]
 
-        result1 = expensive_function(5, multiplier=2)
-        result2 = expensive_function(5, multiplier=3)
-        result3 = expensive_function(5, multiplier=2)
+        # First call
+        result1 = get_user_posts(123)
+        assert result1 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
 
-        assert result1 == 10
-        assert result2 == 15
-        assert result3 == 10
-        assert call_count == 2
+        # Second call should use cache
+        result2 = get_user_posts(123)
+        assert result2 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
 
-    @patch.dict("os.environ", {"DEP_CACHE_ENABLED": "false"})
-    def test_caching_disabled_by_config(self, cache_manager):
+        # Invalidate dependency and call again
+        from simple_dep_cache.manager import get_or_create_cache_manager
+
+        manager = get_or_create_cache_manager()
+        assert manager is not None
+        manager.invalidate_dependency("user:123")
+        result3 = get_user_posts(123)
+        assert call_count == 2  # Should re-execute
+
+    def test_function_with_dependencies_using_add_dependency(self, cache_manager):
+        """Test function with explicit dependencies."""
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x):
+        @cache_with_deps(name="test")
+        def get_user_posts(user_id: int):
+            nonlocal call_count
+
+            add_dependency("user:123")
+
+            call_count += 1
+            return [{"id": 1, "title": "Post 1"}]
+
+        # First call
+        result1 = get_user_posts(123)
+        assert result1 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Second call should use cache
+        result2 = get_user_posts(123)
+        assert result2 == [{"id": 1, "title": "Post 1"}]
+        assert call_count == 1
+
+        # Invalidate dependency and call again
+        from simple_dep_cache.manager import get_or_create_cache_manager
+
+        manager = get_or_create_cache_manager("test")
+        assert manager is not None
+        manager.invalidate_dependency("user:123")
+        result3 = get_user_posts(123)
+        assert call_count == 2  # Should re-execute
+
+    def test_exception_caching(self, cache_manager):
+        """Test exception caching functionality."""
+        call_count = 0
+
+        @cache_with_deps(name="test", cache_exception_types=[ValueError])
+        def failing_function():
             nonlocal call_count
             call_count += 1
-            return x * 2
-
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 2
-
-    def test_context_restoration(self, cache_manager):
-        old_deps = {"existing_dep"}
-        set_current_dependencies(old_deps)
-        set_current_cache_key("existing_key")
-
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x):
-            add_dependency("function_dep")
-            return x * 2
-
-        result = expensive_function(5)
-
-        assert result == 10
-        assert get_current_dependencies() == old_deps
-
-    def test_exception_handling_restores_context(self, cache_manager):
-        old_deps = {"existing_dep"}
-        set_current_dependencies(old_deps)
-        set_current_cache_key("existing_key")
-
-        @cache_with_deps(cache_manager=cache_manager)
-        def failing_function(x):
-            add_dependency("function_dep")
             raise ValueError("Test error")
 
+        # First call should cache the exception
         with pytest.raises(ValueError, match="Test error"):
-            failing_function(5)
-
-        assert get_current_dependencies() == old_deps
-
-    def test_exception_caching_enabled(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError])
-        def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x < 0:
-                raise ValueError(f"Negative value: {x}")
-            return x * 2
-
-        # First call should raise and cache the exception
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            failing_function(-1)
+            failing_function()
         assert call_count == 1
 
-        # Second call with same arguments should retrieve cached exception
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            failing_function(-1)
-        assert call_count == 1  # Should not increment, exception was cached
+        # Second call should raise cached exception without re-executing
+        with pytest.raises(ValueError, match="Test error"):
+            failing_function()
+        assert call_count == 1
 
-        # Positive value should work normally
-        result = failing_function(5)
-        assert result == 10
+    def test_exception_not_cached_when_type_not_listed(self, cache_manager):
+        """Test that exceptions not in cache_exception_types are not cached."""
+        call_count = 0
+
+        @cache_with_deps(name="test", cache_exception_types=[KeyError])
+        def failing_function():
+            nonlocal call_count
+            call_count += 1
+            raise ValueError("Test error")
+
+        # First call should raise and not cache
+        with pytest.raises(ValueError, match="Test error"):
+            failing_function()
+        assert call_count == 1
+
+        # Second call should re-execute (not cached)
+        with pytest.raises(ValueError, match="Test error"):
+            failing_function()
         assert call_count == 2
 
-    def test_exception_caching_disabled_by_default(self, cache_manager):
+    def test_caching_disabled(self, monkeypatch):
+        """Test behavior when caching is disabled."""
+
+        # Mock get_or_create_cache_manager to return None
+        def mock_get_manager(name=None):
+            return None
+
+        from simple_dep_cache import decorators
+        from simple_dep_cache import manager as manager_module
+
+        monkeypatch.setattr(decorators, "get_or_create_cache_manager", mock_get_manager)
+        monkeypatch.setattr(manager_module, "get_or_create_cache_manager", mock_get_manager)
+
         call_count = 0
 
-        @cache_with_deps(cache_manager=cache_manager)
-        def failing_function(x):
+        @cache_with_deps(name="test")
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            if x < 0:
-                raise ValueError(f"Negative value: {x}")
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        # Exception should not be cached when cache_exception_types is not provided
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            failing_function(-1)
+        # All calls should execute function (no caching)
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-        # Second call should execute function again
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            failing_function(-1)
-        assert call_count == 2
-
-    def test_exception_caching_specific_types(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError])
-        def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x == -1:
-                raise ValueError("ValueError message")
-            elif x == -2:
-                raise RuntimeError("RuntimeError message")
-            return x * 2
-
-        # ValueError should be cached
-        with pytest.raises(ValueError, match="ValueError message"):
-            failing_function(-1)
-        assert call_count == 1
-
-        with pytest.raises(ValueError, match="ValueError message"):
-            failing_function(-1)
-        assert call_count == 1  # Should not increment
-
-        # RuntimeError should not be cached (not in cache_exception_types)
-        with pytest.raises(RuntimeError, match="RuntimeError message"):
-            failing_function(-2)
-        assert call_count == 2
-
-        with pytest.raises(RuntimeError, match="RuntimeError message"):
-            failing_function(-2)
-        assert call_count == 3  # Should increment since not cached
-
-    def test_exception_caching_with_dependencies(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(
-            cache_manager=cache_manager,
-            cache_exception_types=[ValueError],
-            dependencies={"static_dep"},
-        )
-        def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            add_dependency("dynamic_dep")
-            raise ValueError(f"Error: {x}")
-
-        # Cache the exception
-        with pytest.raises(ValueError, match="Error: 5"):
-            failing_function(5)
-        assert call_count == 1
-
-        # Should hit cache
-        with pytest.raises(ValueError, match="Error: 5"):
-            failing_function(5)
-        assert call_count == 1
-
-        # Invalidate static dependency - should clear cache
-        cache_manager.invalidate_dependency("static_dep")
-        with pytest.raises(ValueError, match="Error: 5"):
-            failing_function(5)
-        assert call_count == 2
-
-        # Cache again and invalidate dynamic dependency
-        with pytest.raises(ValueError, match="Error: 5"):
-            failing_function(5)
-        assert call_count == 2
-
-        cache_manager.invalidate_dependency("dynamic_dep")
-        with pytest.raises(ValueError, match="Error: 5"):
-            failing_function(5)
-        assert call_count == 3
-
-    def test_exception_caching_with_ttl(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError], ttl=60)
-        def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            raise ValueError(f"Error: {x}")
-
-        # Cache the exception
-        with pytest.raises(ValueError, match="Error: 1"):
-            failing_function(1)
-        assert call_count == 1
-
-        # Should hit cache
-        with pytest.raises(ValueError, match="Error: 1"):
-            failing_function(1)
-        assert call_count == 1
-
-    def test_exception_caching_inheritance(self, cache_manager):
-        call_count = 0
-
-        class CustomError(ValueError):
-            pass
-
-        @cache_with_deps(cache_manager=cache_manager, cache_exception_types=[ValueError])
-        def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x == 1:
-                raise ValueError("Base error")
-            elif x == 2:
-                raise CustomError("Custom error")
-            return x
-
-        # Base ValueError should be cached
-        with pytest.raises(ValueError, match="Base error"):
-            failing_function(1)
-        assert call_count == 1
-
-        with pytest.raises(ValueError, match="Base error"):
-            failing_function(1)
-        assert call_count == 1  # Cached
-
-        # CustomError (subclass of ValueError) should also be cached
-        with pytest.raises(CustomError, match="Custom error"):
-            failing_function(2)
-        assert call_count == 2
-
-        # The cached exception should have the same type and message
-        # but will be a different instance due to serialization/deserialization
-        with pytest.raises(Exception, match="Custom error") as exc_info:
-            failing_function(2)
-        assert call_count == 2  # Cached due to inheritance
-
-        # Verify the cached exception maintains the correct type name
-        # Note: Due to serialization, it might be a dynamically created type
-        # but should still have the same name and message
-        cached_exc = exc_info.value
-        assert type(cached_exc).__name__ == "CustomError"
-        assert str(cached_exc) == "Custom error"
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 2  # Should re-execute
 
 
-class TestAsyncCacheWithDeps:
-    @pytest.mark.asyncio
-    async def test_basic_caching_async_func(self, async_cache_manager):
-        call_count = 0
+class TestNestedFunctionsWithDependencies:
+    """Test nested decorated functions with dependencies."""
 
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_async_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        result1 = await expensive_async_function(5)
-        result2 = await expensive_async_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_basic_caching_sync_func(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        def expensive_sync_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        result1 = await expensive_sync_function(5)
-        result2 = await expensive_sync_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
-
-    @pytest.mark.asyncio
-    @patch("simple_dep_cache.manager.create_async_redis_client_from_config")
-    async def test_default_cache_manager(self, mock_create_async_redis):
-        # Reset global manager state for clean test
+    def setup_method(self):
+        """Reset context before each test."""
         import simple_dep_cache.manager as manager_module
 
-        manager_module._default_async_manager = None
+        manager_module._managers = {}
+        reset_context()
 
-        mock_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        mock_create_async_redis.return_value = mock_redis
-        call_count = 0
+    def test_nested_functions_same_manager(self):
+        """Test S1: Nested functions with same manager - dependencies merge to outer."""
+        from simple_dep_cache.fakes import FakeConfig
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
-        @async_cache_with_deps()
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
+        config = FakeConfig()
 
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
+        backend = FakeCacheBackend(config)
+        manager = get_or_create_cache_manager("my_manager", config=config, backend=backend)
 
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
+        assert manager is not None
 
-        await mock_redis.aclose()
+        outer_calls = 0
+        inner_calls = 0
 
-    @pytest.mark.asyncio
-    async def test_caching_with_ttl(self, async_cache_manager):
-        call_count = 0
+        @cache_with_deps(name="my_manager", dependencies={"user:1"})
+        def get_user_with_posts(user_id: int):
+            nonlocal outer_calls
+            outer_calls += 1
+            posts = get_posts_for_user(user_id)  # Inner function call
+            return {"user": f"user_{user_id}", "posts": posts}
 
-        @async_cache_with_deps(cache_manager=async_cache_manager, ttl=60)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
+        @cache_with_deps(name="my_manager", dependencies={"post:123"})
+        def get_posts_for_user(user_id: int):
+            nonlocal inner_calls
+            inner_calls += 1
+            return [{"id": 123, "title": "Post 123"}]
 
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
+        # Execute outer function
+        result = get_user_with_posts(1)
+        assert result == {"user": "user_1", "posts": [{"id": 123, "title": "Post 123"}]}
+        assert outer_calls == 1
+        assert inner_calls == 1
 
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
+        # Execute again - both should use cache
+        result2 = get_user_with_posts(1)
 
-    @pytest.mark.asyncio
-    async def test_caching_with_key_prefix(self, async_cache_manager):
-        call_count = 0
+        assert result2 == {"user": "user_1", "posts": [{"id": 123, "title": "Post 123"}]}
+        assert outer_calls == 1
+        assert inner_calls == 1
 
-        @async_cache_with_deps(cache_manager=async_cache_manager, key_prefix="prefix")
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
+        # Invalidate user dependency - should invalidate outer function
+        # Outer function depends on both ["user:1", "post:123"] due to merging
+        manager.invalidate_dependency("user:1")
 
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
+        result3 = get_user_with_posts(1)
 
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
+        assert result3 == {"user": "user_1", "posts": [{"id": 123, "title": "Post 123"}]}
+        assert outer_calls == 2  # Outer re-executed
+        assert inner_calls == 1  # Inner still cached
 
-    @pytest.mark.asyncio
-    async def test_caching_with_additional_dependencies(self, async_cache_manager):
-        call_count = 0
+        manager.invalidate_dependency("post:123")
+        result4 = get_user_with_posts(1)
+        assert result4 == {"user": "user_1", "posts": [{"id": 123, "title": "Post 123"}]}
+        assert outer_calls == 3  # Outer re-executed again
+        assert inner_calls == 2  # Inner re-executed
 
-        @async_cache_with_deps(cache_manager=async_cache_manager, dependencies={"external_dep"})
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
+    def test_nested_functions_different_managers(self):
+        """Test S2: Nested functions with different managers - manager isolation."""
+        from simple_dep_cache.fakes import FakeConfig
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
+        config1 = FakeConfig(prefix="manager1")
+        config2 = FakeConfig(prefix="manager2")
 
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
+        backend1 = FakeCacheBackend(config1)
+        backend2 = FakeCacheBackend(config2)
 
-        await async_cache_manager.invalidate_dependency("external_dep")
-        result3 = await expensive_function(5)
-        assert result3 == 10
-        assert call_count == 2
+        manager1 = get_or_create_cache_manager("manager1", config=config1, backend=backend1)
+        manager2 = get_or_create_cache_manager("manager2", config=config2, backend=backend2)
 
-    @pytest.mark.asyncio
-    async def test_caching_with_tracked_dependencies(self, async_cache_manager):
-        call_count = 0
+        assert manager1 is not None
+        assert manager2 is not None
 
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            add_dependency("tracked_dep")
-            return x * 2
+        outer_calls = 0
+        inner_calls = 0
 
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
+        @cache_with_deps(name="manager1", dependencies={"user:1"})
+        def get_user_with_posts(user_id: int):
+            nonlocal outer_calls
+            outer_calls += 1
+            posts = get_posts_for_user(user_id)  # Inner function uses different manager
+            return {"user": f"user_{user_id}", "posts": posts}
 
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
+        @cache_with_deps(name="manager2", dependencies={"post:123"})
+        def get_posts_for_user(user_id: int):
+            nonlocal inner_calls
+            inner_calls += 1
+            return [{"id": 123, "title": "Post 123"}]
 
-        await async_cache_manager.invalidate_dependency("tracked_dep")
-        result3 = await expensive_function(5)
-        assert result3 == 10
-        assert call_count == 2
+        # Execute outer function
+        result = get_user_with_posts(1)
+        assert result == {"user": "user_1", "posts": [{"id": 123, "title": "Post 123"}]}
+        assert outer_calls == 1
+        assert inner_calls == 1
 
-    @pytest.mark.asyncio
-    async def test_caching_with_combined_dependencies(self, async_cache_manager):
-        call_count = 0
+        # Execute again - both should use cache
+        result2 = get_user_with_posts(1)
+        assert outer_calls == 1
+        assert inner_calls == 1
 
-        @async_cache_with_deps(cache_manager=async_cache_manager, dependencies={"static_dep"})
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            add_dependency("dynamic_dep")
-            return x * 2
+        # Invalidate post dependency from manager1 - only affects outer function
+        # Inner function uses manager2, so it stays cached
+        manager1.invalidate_dependency("post:123")
 
-        result1 = await expensive_function(5)
-        assert result1 == 10
-        assert call_count == 1
+        result3 = get_user_with_posts(1)
+        assert outer_calls == 1  # Outer still cached
+        assert inner_calls == 1  # Inner still cached
 
-        await async_cache_manager.invalidate_dependency("static_dep")
-        result2 = await expensive_function(5)
-        assert result2 == 10
-        assert call_count == 2
+        manager2.invalidate_dependency("post:123")
+        result4 = get_user_with_posts(1)
+        assert outer_calls == 1  # Outer still cached
+        assert inner_calls == 1  # outer cached, so inner did not get called
 
-        result3 = await expensive_function(5)
-        assert call_count == 2
-
-        await async_cache_manager.invalidate_dependency("dynamic_dep")
-        result4 = await expensive_function(5)
-        assert result4 == 10
-        assert call_count == 3
+        manager1.invalidate_dependency("user:1")
+        result5 = get_user_with_posts(1)
+        assert outer_calls == 2  # Outer re-executed
+        assert inner_calls == 2  # Inner re-executed
 
     @pytest.mark.asyncio
-    async def test_different_arguments_different_cache(self, async_cache_manager):
-        call_count = 0
+    async def test_nested_async_functions_same_manager(self):
+        """Test async nested functions with same manager."""
+        from simple_dep_cache.fakes import FakeConfig
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
+        config1 = FakeConfig(prefix="manager1")
+        config2 = FakeConfig(prefix="manager1")
 
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(10)
-        result3 = await expensive_function(5)
+        async_backend1 = FakeAsyncCacheBackend(config1)
+        async_backend2 = FakeAsyncCacheBackend(config2)
 
-        assert result1 == 10
-        assert result2 == 20
-        assert result3 == 10
-        assert call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_kwargs_in_cache_key(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x, multiplier=2):
-            nonlocal call_count
-            call_count += 1
-            return x * multiplier
-
-        result1 = await expensive_function(5, multiplier=2)
-        result2 = await expensive_function(5, multiplier=3)
-        result3 = await expensive_function(5, multiplier=2)
-
-        assert result1 == 10
-        assert result2 == 15
-        assert result3 == 10
-        assert call_count == 2
-
-    @pytest.mark.asyncio
-    @patch.dict("os.environ", {"DEP_CACHE_ENABLED": "false"})
-    async def test_caching_disabled_by_config_async(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 2
-
-    @pytest.mark.asyncio
-    @patch.dict("os.environ", {"DEP_CACHE_ENABLED": "false"})
-    async def test_caching_disabled_by_config_sync(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_context_restoration(self, async_cache_manager):
-        old_deps = {"existing_dep"}
-        set_current_dependencies(old_deps)
-        set_current_cache_key("existing_key")
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x):
-            add_dependency("function_dep")
-            return x * 2
-
-        result = await expensive_function(5)
-
-        assert result == 10
-        assert get_current_dependencies() == old_deps
-
-    @pytest.mark.asyncio
-    async def test_exception_handling_restores_context(self, async_cache_manager):
-        old_deps = {"existing_dep"}
-        set_current_dependencies(old_deps)
-        set_current_cache_key("existing_key")
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def failing_function(x):
-            add_dependency("function_dep")
-            raise ValueError("Test error")
-
-        with pytest.raises(ValueError, match="Test error"):
-            await failing_function(5)
-
-        assert get_current_dependencies() == old_deps
-
-    @pytest.mark.asyncio
-    async def test_exception_caching_enabled_async(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(
-            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
+        manager1 = get_or_create_cache_manager(
+            "manager1", config=config1, async_backend=async_backend1
         )
-        async def failing_async_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x < 0:
-                raise ValueError(f"Negative value: {x}")
-            return x * 2
-
-        # First call should raise and cache the exception
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            await failing_async_function(-1)
-        assert call_count == 1
-
-        # Second call with same arguments should retrieve cached exception
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            await failing_async_function(-1)
-        assert call_count == 1  # Should not increment, exception was cached
-
-        # Positive value should work normally
-        result = await failing_async_function(5)
-        assert result == 10
-        assert call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_exception_caching_enabled_sync_in_async(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(
-            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
+        manager2 = get_or_create_cache_manager(
+            "manager1", config=config2, async_backend=async_backend2
         )
-        def failing_sync_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x < 0:
-                raise ValueError(f"Negative value: {x}")
-            return x * 2
+        assert manager1 is not None
+        assert (
+            manager1 is manager2
+        )  # since the manager1 is already created, config and async_backend are ignored
 
-        # First call should raise and cache the exception
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            await failing_sync_function(-1)
-        assert call_count == 1
+        outer_calls = 0
+        inner_calls = 0
 
-        # Second call with same arguments should retrieve cached exception
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            await failing_sync_function(-1)
-        assert call_count == 1  # Should not increment, exception was cached
+        @cache_with_deps(name="manager1", dependencies={"user:1"})
+        async def get_user_with_posts(user_id: int):
+            nonlocal outer_calls
+            outer_calls += 1
+            posts = await get_posts_for_user(user_id)
+            return {"user": f"user_{user_id}", "posts": posts}
 
-    @pytest.mark.asyncio
-    async def test_exception_caching_disabled_by_default_async(self, async_cache_manager):
-        call_count = 0
+        @cache_with_deps(name="manager1", dependencies={"post:123"})
+        async def get_posts_for_user(user_id: int):
+            nonlocal inner_calls
+            inner_calls += 1
+            await asyncio.sleep(0)  # Simulate async operation
+            return [{"id": 123, "title": "Post 123"}]
 
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x < 0:
-                raise ValueError(f"Negative value: {x}")
-            return x * 2
+        # Execute outer function
+        result = await get_user_with_posts(1)
+        assert result == {"user": "user_1", "posts": [{"id": 123, "title": "Post 123"}]}
+        assert outer_calls == 1
+        assert inner_calls == 1
 
-        # Exception should not be cached when cache_exception_types is not provided
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            await failing_function(-1)
-        assert call_count == 1
+        # Execute again - both should use cache
+        result2 = await get_user_with_posts(1)
+        assert outer_calls == 1
+        assert inner_calls == 1
 
-        # Second call should execute function again
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            await failing_function(-1)
-        assert call_count == 2
+        # Invalidate user dependency - should invalidate outer function
+        await manager1.ainvalidate_dependency("user:1")
 
-    @pytest.mark.asyncio
-    async def test_exception_caching_specific_types_async(self, async_cache_manager):
-        call_count = 0
+        result3 = await get_user_with_posts(1)
+        assert outer_calls == 2  # Outer re-executed
+        assert inner_calls == 1  # Inner still cached
 
-        @async_cache_with_deps(
-            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
-        )
-        async def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x == -1:
-                raise ValueError("ValueError message")
-            elif x == -2:
-                raise RuntimeError("RuntimeError message")
-            return x * 2
 
-        # ValueError should be cached
-        with pytest.raises(ValueError, match="ValueError message"):
-            await failing_function(-1)
-        assert call_count == 1
+class TestMultiManagerNonNested:
+    """Test non-nested functions with multiple managers."""
 
-        with pytest.raises(ValueError, match="ValueError message"):
-            await failing_function(-1)
-        assert call_count == 1  # Should not increment
+    def setup_method(self):
+        """Reset context before each test."""
+        import simple_dep_cache.manager as manager_module
 
-        # RuntimeError should not be cached (not in cache_exception_types)
-        with pytest.raises(RuntimeError, match="RuntimeError message"):
-            await failing_function(-2)
-        assert call_count == 2
+        manager_module._managers = {}
+        reset_context()
 
-        with pytest.raises(RuntimeError, match="RuntimeError message"):
-            await failing_function(-2)
-        assert call_count == 3  # Should increment since not cached
+    def test_non_nested_multi_manager_functions(self):
+        """Test S3: Non-nested functions with different managers."""
+        from simple_dep_cache.fakes import FakeConfig
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
-    @pytest.mark.asyncio
-    async def test_exception_caching_with_dependencies_async(self, async_cache_manager):
-        call_count = 0
+        config1 = FakeConfig(prefix="user_cache")
+        config2 = FakeConfig(prefix="post_cache")
 
-        @async_cache_with_deps(
-            cache_manager=async_cache_manager,
-            cache_exception_types=[ValueError],
-            dependencies={"static_dep"},
-        )
-        async def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            add_dependency("dynamic_dep")
-            raise ValueError(f"Error: {x}")
+        backend1 = FakeCacheBackend(config1)
+        backend2 = FakeCacheBackend(config2)
 
-        # Cache the exception
-        with pytest.raises(ValueError, match="Error: 5"):
-            await failing_function(5)
-        assert call_count == 1
+        manager1 = get_or_create_cache_manager(config=config1, backend=backend1)
+        manager2 = get_or_create_cache_manager(config=config2, backend=backend2)
 
-        # Should hit cache
-        with pytest.raises(ValueError, match="Error: 5"):
-            await failing_function(5)
-        assert call_count == 1
+        assert manager1 is not None
+        assert manager2 is not None
+        user_calls = 0
+        post_calls = 0
 
-        # Invalidate static dependency - should clear cache
-        await async_cache_manager.invalidate_dependency("static_dep")
-        with pytest.raises(ValueError, match="Error: 5"):
-            await failing_function(5)
-        assert call_count == 2
+        @cache_with_deps(name="user_cache", dependencies={"user:1"})
+        def get_user(user_id: int):
+            nonlocal user_calls
+            user_calls += 1
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        # Cache again and invalidate dynamic dependency
-        with pytest.raises(ValueError, match="Error: 5"):
-            await failing_function(5)
-        assert call_count == 2
+        @cache_with_deps(name="post_cache", dependencies={"post:123"})
+        def get_post(post_id: int):
+            nonlocal post_calls
+            post_calls += 1
+            return {"id": post_id, "title": f"Post {post_id}"}
 
-        await async_cache_manager.invalidate_dependency("dynamic_dep")
-        with pytest.raises(ValueError, match="Error: 5"):
-            await failing_function(5)
-        assert call_count == 3
+        # Execute both functions
+        user_result = get_user(1)
+        post_result = get_post(123)
 
-    @pytest.mark.asyncio
-    async def test_exception_caching_inheritance_async(self, async_cache_manager):
-        call_count = 0
+        assert user_result == {"id": 1, "name": "User 1"}
+        assert post_result == {"id": 123, "title": "Post 123"}
+        assert user_calls == 1
+        assert post_calls == 1
 
-        class CustomError(ValueError):
-            pass
+        # Execute again - both should use cache
+        user_result2 = get_user(1)
+        post_result2 = get_post(123)
+        assert user_calls == 1
+        assert post_calls == 1
 
-        @async_cache_with_deps(
-            cache_manager=async_cache_manager, cache_exception_types=[ValueError]
-        )
-        async def failing_function(x):
-            nonlocal call_count
-            call_count += 1
-            if x == 1:
-                raise ValueError("Base error")
-            elif x == 2:
-                raise CustomError("Custom error")
-            return x
+        # Invalidate user dependency - only affects user function
+        manager1.invalidate_dependency("user:1")
 
-        # Base ValueError should be cached
-        with pytest.raises(ValueError, match="Base error"):
-            await failing_function(1)
-        assert call_count == 1
+        user_result3 = get_user(1)
+        post_result3 = get_post(123)  # Should still use cache
 
-        with pytest.raises(ValueError, match="Base error"):
-            await failing_function(1)
-        assert call_count == 1  # Cached
+        assert user_calls == 2  # User re-executed
+        assert post_calls == 1  # Post still cached
 
-        # CustomError (subclass of ValueError) should also be cached
-        with pytest.raises(CustomError, match="Custom error"):
-            await failing_function(2)
-        assert call_count == 2
+        # Invalidate post dependency - only affects post function
+        manager2.invalidate_dependency("post:123")
 
-        # The cached exception should have the same type and message
-        # but will be a different instance due to serialization/deserialization
-        with pytest.raises(Exception, match="Custom error") as exc_info:
-            await failing_function(2)
-        assert call_count == 2  # Cached due to inheritance
+        user_result4 = get_user(1)  # Should still use cache
+        post_result4 = get_post(123)  # Should re-execute
 
-        # Verify the cached exception maintains the correct type name
-        # Note: Due to serialization, it might be a dynamically created type
-        # but should still have the same name and message
-        cached_exc = exc_info.value
-        assert type(cached_exc).__name__ == "CustomError"
-        assert str(cached_exc) == "Custom error"
+        assert user_calls == 2  # User still cached
+        assert post_calls == 2  # Post re-executed
 
     @pytest.mark.asyncio
-    async def test_concurrent_cached_calls(self, async_cache_manager):
-        call_count = 0
+    async def test_non_nested_multi_manager_async(self):
+        """Test S3: Non-nested async functions with different managers."""
+        from simple_dep_cache.fakes import FakeConfig
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
+        config1 = FakeConfig(prefix="user_cache")
+        config2 = FakeConfig(prefix="post_cache")
 
-        # First call should cache the result
-        result1 = await expensive_function(5)
-        assert result1 == 10
-        assert call_count == 1
+        async_backend1 = FakeAsyncCacheBackend(config1)
+        async_backend2 = FakeAsyncCacheBackend(config2)
 
-        # Subsequent concurrent calls should all hit cache
-        tasks = [expensive_function(5) for _ in range(5)]
-        results = await asyncio.gather(*tasks)
+        manager1 = get_or_create_cache_manager(config=config1, async_backend=async_backend1)
+        manager2 = get_or_create_cache_manager(config=config2, async_backend=async_backend2)
 
-        assert all(result == 10 for result in results)
-        assert call_count == 1
+        assert manager1 is not None
+        assert manager2 is not None
+
+        user_calls = 0
+        post_calls = 0
+
+        @cache_with_deps(name="user_cache", dependencies={"user:1"})
+        async def get_user(user_id: int):
+            nonlocal user_calls
+            user_calls += 1
+            await asyncio.sleep(0)
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        @cache_with_deps(name="post_cache", dependencies={"post:123"})
+        async def get_post(post_id: int):
+            nonlocal post_calls
+            post_calls += 1
+            await asyncio.sleep(0)
+            return {"id": post_id, "title": f"Post {post_id}"}
+
+        # Execute both functions
+        user_result, post_result = await asyncio.gather(get_user(1), get_post(123))
+
+        assert user_result == {"id": 1, "name": "User 1"}
+        assert post_result == {"id": 123, "title": "Post 123"}
+        assert user_calls == 1
+        assert post_calls == 1
+
+        # Execute again - both should use cache
+        user_result2, post_result2 = await asyncio.gather(get_user(1), get_post(123))
+        assert user_calls == 1
+        assert post_calls == 1
+
+        # Invalidate user dependency - only affects user function
+        await manager1.ainvalidate_dependency("user:1")
+
+        user_result3, post_result3 = await asyncio.gather(get_user(1), get_post(123))
+
+        assert user_calls == 2  # User re-executed
+        assert post_calls == 1  # Post still cached
+
+        # Invalidate post dependency - only affects post function
+        await manager2.ainvalidate_dependency("post:123")
+
+        user_result4, post_result4 = await asyncio.gather(get_user(1), get_post(123))
+
+        assert user_calls == 2  # User still cached
+        assert post_calls == 2  # Post re-executed
 
 
 class TestCacheKeyGeneration:
-    def test_get_cache_key_for_arg_basic_types(self):
-        # Test basic types use string representation
-        assert _get_cache_key_for_arg(42) == "42"
-        assert _get_cache_key_for_arg("hello") == "hello"
-        assert _get_cache_key_for_arg(True) == "True"
+    """Test cache key generation for different argument types."""
 
-    def test_get_cache_key_for_arg_custom_cache_key_method(self):
-        class CustomObject:
-            def __cache_key__(self):
-                return "custom_key_123"
+    def setup_method(self):
+        """Reset context before each test."""
+        reset_context()
 
-        obj = CustomObject()
-        assert _get_cache_key_for_arg(obj) == "custom_key_123"
+    def test_cache_key_with_different_args(self, cache_manager):
+        """Test that different arguments generate different cache keys."""
+        call_count = 0
 
-    def test_get_cache_key_for_arg_cache_key_attribute(self):
-        class CustomObject:
-            _cache_key = "attribute_key_789"
+        @cache_with_deps(name="test")
+        def get_data(arg1, arg2=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return {"arg1": arg1, "arg2": arg2, "kwargs": kwargs}
 
-        obj = CustomObject()
-        assert _get_cache_key_for_arg(obj) == "attribute_key_789"
+        # Different positional args
+        get_data(1)
+        get_data(2)
+        assert call_count == 2
 
-    def test_get_cache_key_for_arg_django_like_model(self):
-        class DjangoLikeModel:
-            pk = 123
+        # Same args should use cache
+        get_data(1)
+        assert call_count == 2
 
-            def __str__(self):
-                return "DjangoLikeModel object (123)"
+        # Different keyword args
+        get_data(1, arg2="test")
+        assert call_count == 3
 
-        obj = DjangoLikeModel()
-        assert _get_cache_key_for_arg(obj) == "DjangoLikeModel::123"
+        # Same combination should use cache
+        get_data(1, arg2="test")
+        assert call_count == 3
 
-    def test_get_cache_key_for_arg_object_with_id(self):
-        class ObjectWithId:
-            id = 456
-
-            def __str__(self):
-                return "ObjectWithId object (456)"
-
-        obj = ObjectWithId()
-        assert _get_cache_key_for_arg(obj) == "ObjectWithId::456"
-
-    def test_get_cache_key_for_arg_priority_order(self):
-        # __cache_key__ method should take priority over pk/id
-        class ModelWithCacheKey:
-            pk = 123
-            id = 456
-
-            def __cache_key__(self):
-                return "custom_override"
-
-        obj = ModelWithCacheKey()
-        assert _get_cache_key_for_arg(obj) == "custom_override"
-
-        # _cache_key attribute should take priority over pk/id
-        class ModelWithCacheKeyAttr:
-            pk = 123
-            id = 456
-            _cache_key = "attr_override"
-
-        obj2 = ModelWithCacheKeyAttr()
-        assert _get_cache_key_for_arg(obj2) == "attr_override"
-
-        # pk should take priority over id
-        class ModelWithBoth:
-            pk = 123
-            id = 456
-
-        obj3 = ModelWithBoth()
-        assert _get_cache_key_for_arg(obj3) == "ModelWithBoth::123"
-
-    def test_cache_with_custom_objects(self, cache_manager):
+    def test_cache_key_with_objects(self, cache_manager):
+        """Test cache key generation with objects."""
         call_count = 0
 
         class User:
-            def __init__(self, user_id):
-                self.id = user_id
+            def __init__(self, id, name):
+                self.id = id
+                self.name = name
 
-            def __cache_key__(self):
-                return f"User::{self.id}"
+            def __str__(self) -> str:
+                return f"User<{self.id}>"
 
-        @cache_with_deps(cache_manager=cache_manager)
-        def get_user_data(user):
+        @cache_with_deps(name="test")
+        def get_user(user):
             nonlocal call_count
             call_count += 1
-            return f"data_for_{user.id}"
+            return {"id": user.id, "name": user.name}
 
-        user1 = User(123)
-        user2 = User(123)  # Different object, same ID
-        user3 = User(456)  # Different ID
+        user1 = User(1, "Alice")
+        user1_b = User(1, "Alice")  # Same data, different instance
+        user2 = User(2, "Bob")
 
-        # Same logical user should hit cache
-        result1 = get_user_data(user1)
-        result2 = get_user_data(user2)
-
-        assert result1 == "data_for_123"
-        assert result2 == "data_for_123"
+        # Same logical data should use cache (based on string representation)
+        get_user(user1)
         assert call_count == 1
 
-        # Different user should miss cache
-        result3 = get_user_data(user3)
-        assert result3 == "data_for_456"
+        get_user(user1_b)
+        assert call_count == 1
+
+        get_user(user1)
+        assert call_count == 1
+
+        get_user(user2)
         assert call_count == 2
-
-    def test_cache_with_mixed_argument_types(self, cache_manager):
-        call_count = 0
-
-        class Model:
-            def __init__(self, model_id):
-                self.id = model_id
-
-            def __cache_key__(self):
-                return f"Model::{self.id}"
-
-        @cache_with_deps(cache_manager=cache_manager)
-        def complex_function(model, count, name="default"):
-            nonlocal call_count
-            call_count += 1
-            return f"{model.id}_{count}_{name}"
-
-        model1 = Model(42)
-        model2 = Model(42)  # Same logical model
-
-        # Same arguments should hit cache
-        result1 = complex_function(model1, 10, name="test")
-        result2 = complex_function(model2, 10, name="test")
-
-        assert result1 == "42_10_test"
-        assert result2 == "42_10_test"
-        assert call_count == 1
-
-        # Different arguments should miss cache
-        result3 = complex_function(model1, 20, name="test")
-        assert result3 == "42_20_test"
-        assert call_count == 2
-
-
-class TestTTLFunctionality:
-    def test_set_cache_ttl_sync(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            # Function can set TTL during execution
-            set_cache_ttl(300)
-            return x * 2
-
-        # Initially no TTL set
-        result1 = expensive_function(5)
-        result2 = expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
-
-        # Verify TTL was applied by checking Redis
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (5,), {}))
-        ttl = cache_manager.redis.ttl(cache_key)
-        assert ttl > 250  # Should be close to 300
-
-    def test_context_ttl_overrides_decorator_sync(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager, ttl=100)
-        def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            # Function sets TTL during execution - this should override decorator
-            set_cache_ttl(300)
-            return x * 2
-
-        result = expensive_function(5)
-
-        assert result == 10
-        assert call_count == 1
-
-        # Verify function TTL was used (300s), not decorator TTL (100s)
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (5,), {}))
-        ttl = cache_manager.redis.ttl(cache_key)
-        assert ttl > 250  # Should be close to 300, not 100
-
-    @pytest.mark.asyncio
-    async def test_set_cache_ttl_async(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            # Function can set TTL during execution
-            set_cache_ttl(300)
-            return x * 2
-
-        # Initially no TTL set
-        result1 = await expensive_function(5)
-        result2 = await expensive_function(5)
-
-        assert result1 == 10
-        assert result2 == 10
-        assert call_count == 1
-
-        # Verify TTL was applied by checking Redis
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = async_cache_manager._cache_key(
-            _generate_cache_key(expensive_function, (5,), {})
-        )
-        ttl = await async_cache_manager.redis.ttl(cache_key)
-        assert ttl > 250  # Should be close to 300
-
-    @pytest.mark.asyncio
-    async def test_context_ttl_overrides_decorator_async(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager, ttl=100)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            # Function sets TTL during execution - this should override decorator
-            set_cache_ttl(300)
-            return x * 2
-
-        result = await expensive_function(5)
-
-        assert result == 10
-        assert call_count == 1
-
-        # Verify function TTL was used (300s), not decorator TTL (100s)
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = async_cache_manager._cache_key(
-            _generate_cache_key(expensive_function, (5,), {})
-        )
-        ttl = await async_cache_manager.redis.ttl(cache_key)
-        assert ttl > 250  # Should be close to 300, not 100
-
-    def test_decorator_ttl_when_no_context_sync(self, cache_manager):
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager, ttl=100)
-        def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        # Clear any context TTL
-        set_cache_ttl(None)
-        result = expensive_function(8)
-
-        assert result == 16
-        assert call_count == 1
-
-        # Verify decorator TTL was used
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (8,), {}))
-        ttl = cache_manager.redis.ttl(cache_key)
-        assert 90 < ttl <= 100  # Should be close to 100
-
-    @pytest.mark.asyncio
-    async def test_decorator_ttl_when_no_context_async(self, async_cache_manager):
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager, ttl=100)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        # Clear any context TTL
-        set_cache_ttl(None)
-        result = await expensive_function(8)
-
-        assert result == 16
-        assert call_count == 1
-
-        # Verify decorator TTL was used
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = async_cache_manager._cache_key(
-            _generate_cache_key(expensive_function, (8,), {})
-        )
-        ttl = await async_cache_manager.redis.ttl(cache_key)
-        assert 90 < ttl <= 100  # Should be close to 100
-
-    def test_cache_ttl_context_isolation_sync(self, cache_manager):
-        """Test that decorated functions execute with clean TTL context."""
-        from simple_dep_cache.context import get_cache_ttl
-
-        call_count = 0
-
-        @cache_with_deps(cache_manager=cache_manager)
-        def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            # Verify TTL context is cleared inside function
-            assert get_cache_ttl() is None
-            return x * 2
-
-        # Set TTL before calling function
-        set_cache_ttl(200)
-        result = expensive_function(10)
-
-        assert result == 20
-        assert call_count == 1
-
-        # After function execution, context should be restored
-        assert get_cache_ttl() == 200
-
-        # Verify the cache was set with no TTL (function didn't set one)
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = cache_manager._cache_key(_generate_cache_key(expensive_function, (10,), {}))
-        ttl = cache_manager.redis.ttl(cache_key)
-        assert ttl == -1  # No TTL set
-
-    @pytest.mark.asyncio
-    async def test_cache_ttl_context_isolation_async(self, async_cache_manager):
-        """Test that decorated functions execute with clean TTL context (async)."""
-        from simple_dep_cache.context import get_cache_ttl
-
-        call_count = 0
-
-        @async_cache_with_deps(cache_manager=async_cache_manager)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            # Verify TTL context is cleared inside function
-            assert get_cache_ttl() is None
-            return x * 2
-
-        # Set TTL before calling function
-        set_cache_ttl(250)
-        result = await expensive_function(10)
-
-        assert result == 20
-        assert call_count == 1
-
-        # After function execution, context should be restored
-        assert get_cache_ttl() == 250
-
-        # Verify the cache was set with no TTL (function didn't set one)
-        from simple_dep_cache.decorators import _generate_cache_key
-
-        cache_key = async_cache_manager._cache_key(
-            _generate_cache_key(expensive_function, (10,), {})
-        )
-        ttl = await async_cache_manager.redis.ttl(cache_key)
-        assert ttl == -1  # No TTL set
 
 
 class TestCallbackFunctionality:
-    def test_callback_on_cache_miss_and_hit_sync(self, cache_manager):
-        """Test callback is called correctly on cache miss and hit for sync decorator."""
+    """Test callback functionality in cache_with_deps decorator."""
+
+    def setup_method(self):
+        """Reset context before each test."""
+        import simple_dep_cache.manager as manager_module
+
+        manager_module._managers = {}
+        reset_context()
+
+    def test_sync_callback_with_sync_function(self, cache_manager):
+        """Test sync callback with sync function."""
         call_count = 0
         callback_calls = []
 
-        def test_callback(**kwargs):
+        def sync_callback(**kwargs):
             callback_calls.append(kwargs)
 
-        @cache_with_deps(cache_manager=cache_manager, callback=test_callback)
-        def expensive_function(x):
+        @cache_with_deps(name="test", callback=sync_callback)
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        # First call - should be cache miss
-        result1 = expensive_function(5)
-        assert result1 == 10
+        # First call - cache miss
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
         assert call_count == 1
         assert len(callback_calls) == 1
         assert callback_calls[0]["is_hit"] is False
         assert callback_calls[0]["cached_result"] is None
-        assert callback_calls[0]["args"] == (5,)
+        assert callback_calls[0]["args"] == (123,)
+        assert callback_calls[0]["kwargs"] == {}
 
-        # Second call - should be cache hit
-        result2 = expensive_function(5)
-        assert result2 == 10
-        assert call_count == 1  # Should not increment
+        # Second call - cache hit
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
         assert len(callback_calls) == 2
         assert callback_calls[1]["is_hit"] is True
-        assert callback_calls[1]["cached_result"] == 10
-        assert callback_calls[1]["args"] == (5,)
+        assert callback_calls[1]["cached_result"] == {"id": 123, "name": "User 123"}
 
-    def test_callback_with_different_arguments_sync(self, cache_manager):
-        """Test callback behavior with different function arguments."""
-        call_count = 0
-        callback_calls = []
-
-        def test_callback(**kwargs):
-            callback_calls.append(kwargs)
-
-        @cache_with_deps(cache_manager=cache_manager, callback=test_callback)
-        def expensive_function(x, multiplier=2):
-            nonlocal call_count
-            call_count += 1
-            return x * multiplier
-
-        # Different arguments should result in different cache entries
-        expensive_function(5, multiplier=2)  # miss
-        expensive_function(5, multiplier=3)  # miss
-        expensive_function(5, multiplier=2)  # hit
-        expensive_function(5, multiplier=3)  # hit
-
-        assert call_count == 2
-        assert len(callback_calls) == 4
-
-        # Check miss calls
-        assert callback_calls[0]["is_hit"] is False
-        assert callback_calls[0]["args"] == (5,)
-        assert callback_calls[0]["kwargs"] == {"multiplier": 2}
-
-        assert callback_calls[1]["is_hit"] is False
-        assert callback_calls[1]["args"] == (5,)
-        assert callback_calls[1]["kwargs"] == {"multiplier": 3}
-
-        # Check hit calls
-        assert callback_calls[2]["is_hit"] is True
-        assert callback_calls[3]["is_hit"] is True
-
-    def test_callback_exception_does_not_break_function_sync(self, cache_manager, caplog):
-        """Test that callback exceptions don't break the main function flow."""
+    def test_sync_callback_with_sync_function_error_handling_silent(self, cache_manager):
+        """Test sync callback error handling with silent config."""
         call_count = 0
 
         def failing_callback(**kwargs):
             raise ValueError("Callback error")
 
-        @cache_with_deps(cache_manager=cache_manager, callback=failing_callback)
-        def expensive_function(x):
+        @cache_with_deps(name="test", callback=failing_callback)
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        # Capture log messages at WARNING level
-        with caplog.at_level(logging.WARNING):
-            result1 = expensive_function(5)
-        assert result1 == 10
+        # Should not raise error despite callback failing
+        result = get_user(123)
+        assert result == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-        # Check that warning was logged
-        assert "Cache callback exception occurred" in caplog.text
-        assert "Callback error" in caplog.text
-        caplog.clear()
+    def test_sync_callback_with_sync_function_error_handling_verbose(self):
+        """Test sync callback error handling with verbose config."""
+        import simple_dep_cache.manager as manager_module
+        from simple_dep_cache.fakes import FakeCacheBackend, FakeConfig
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
-        # Second call should still hit cache (and log warning again)
-        with caplog.at_level(logging.WARNING):
-            result2 = expensive_function(5)
-        assert result2 == 10
-        assert call_count == 1
+        manager_module._managers = {}
 
-        # Check that warning was logged again
-        assert "Cache callback exception occurred" in caplog.text
+        config = FakeConfig(prefix="test", callback_error_silent=False)
+        backend = FakeCacheBackend(config)
+        manager = get_or_create_cache_manager(backend=backend, config=config)
 
-    @pytest.mark.asyncio
-    async def test_callback_on_cache_miss_and_hit_async(self, async_cache_manager):
-        """Test callback is called correctly on cache miss and hit for async decorator."""
-        call_count = 0
-        callback_calls = []
-
-        def test_callback(**kwargs):
-            callback_calls.append(kwargs)
-
-        @async_cache_with_deps(cache_manager=async_cache_manager, callback=test_callback)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        # First call - should be cache miss
-        result1 = await expensive_function(5)
-        assert result1 == 10
-        assert call_count == 1
-        assert len(callback_calls) == 1
-        assert callback_calls[0]["is_hit"] is False
-        assert callback_calls[0]["cached_result"] is None
-
-        # Second call - should be cache hit
-        result2 = await expensive_function(5)
-        assert result2 == 10
-        assert call_count == 1  # Should not increment
-        assert len(callback_calls) == 2
-        assert callback_calls[1]["is_hit"] is True
-        assert callback_calls[1]["cached_result"] == 10
-
-    @pytest.mark.asyncio
-    async def test_async_callback_support(self, async_cache_manager):
-        """Test that async callbacks are supported in async decorator."""
-        call_count = 0
-        callback_calls = []
-
-        async def async_test_callback(**kwargs):
-            callback_calls.append(kwargs)
-
-        @async_cache_with_deps(cache_manager=async_cache_manager, callback=async_test_callback)
-        async def expensive_function(x):
-            nonlocal call_count
-            call_count += 1
-            return x * 2
-
-        # First call - should be cache miss
-        result1 = await expensive_function(5)
-        assert result1 == 10
-        assert call_count == 1
-        assert len(callback_calls) == 1
-        assert callback_calls[0]["is_hit"] is False
-
-        # Second call - should be cache hit
-        result2 = await expensive_function(5)
-        assert result2 == 10
-        assert call_count == 1
-        assert len(callback_calls) == 2
-        assert callback_calls[1]["is_hit"] is True
-
-    @pytest.mark.asyncio
-    async def test_callback_exception_does_not_break_function_async(
-        self, async_cache_manager, caplog
-    ):
-        """Test that callback exceptions don't break the main function flow (async)."""
         call_count = 0
 
         def failing_callback(**kwargs):
             raise ValueError("Callback error")
 
-        @async_cache_with_deps(cache_manager=async_cache_manager, callback=failing_callback)
-        async def expensive_function(x):
+        @cache_with_deps(name="test", callback=failing_callback)
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        # Function should work normally despite callback failure
-        with caplog.at_level(logging.WARNING):
-            result1 = await expensive_function(5)
-        assert result1 == 10
+        # Should not raise error despite callback failing
+        result = get_user(123)
+        assert result == {"id": 123, "name": "User 123"}
         assert call_count == 1
-
-        # Check that warning was logged
-        assert "Async cache callback exception occurred" in caplog.text
-        assert "Callback error" in caplog.text
-        caplog.clear()
-
-        # Second call should still hit cache (and log warning again)
-        with caplog.at_level(logging.WARNING):
-            result2 = await expensive_function(5)
-        assert result2 == 10
-        assert call_count == 1
-
-        # Check that warning was logged again
-        assert "Async cache callback exception occurred" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_async_callback_exception_does_not_break_function(
-        self, async_cache_manager, caplog
-    ):
-        """Test that async callback exceptions don't break the main function flow."""
+    async def test_async_callback_with_async_function(self, async_cache_manager):
+        """Test async callback with async function."""
+        call_count = 0
+        callback_calls = []
+
+        async def async_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(name="test", callback=async_callback)
+        async def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0)  # Simulate async operation
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # First call - cache miss
+        result1 = await get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+        assert callback_calls[0]["cached_result"] is None
+
+        # Second call - cache hit
+        result2 = await get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+        assert callback_calls[1]["cached_result"] == {"id": 123, "name": "User 123"}
+
+    @pytest.mark.asyncio
+    async def test_sync_callback_with_async_function(self, async_cache_manager):
+        """Test sync callback with async function."""
+        call_count = 0
+        callback_calls = []
+
+        def sync_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(name="test", callback=sync_callback)
+        async def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0)  # Simulate async operation
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # First call - cache miss
+        result1 = await get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+
+        # Second call - cache hit
+        result2 = await get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+
+    def test_async_callback_with_sync_function_warning(self, cache_manager):
+        """Test async callback with sync function generates warning."""
+        call_count = 0
+        callback_calls = []
+
+        async def async_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        # Capture warnings
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+
+            @cache_with_deps(name="test", callback=async_callback)
+            def get_user(user_id: int):
+                nonlocal call_count
+                call_count += 1
+                return {"id": user_id, "name": f"User {user_id}"}
+
+            # First call - should generate warning and not call callback
+            result1 = get_user(123)
+            assert result1 == {"id": 123, "name": "User 123"}
+            assert call_count == 1
+            assert len(callback_calls) == 0  # Callback should not be called
+
+            # Second call - still no callback
+            result2 = get_user(123)
+            assert result2 == {"id": 123, "name": "User 123"}
+            assert call_count == 1
+            assert len(callback_calls) == 0
+
+            # Check warning was generated
+            assert len(w) == 2  # One warning for each call
+            assert "Async callback provided to sync function" in str(w[0].message)
+            assert "Async callback provided to sync function" in str(w[1].message)
+
+    @pytest.mark.asyncio
+    async def test_async_callback_error_handling(self, async_cache_manager):
+        """Test async callback error handling."""
         call_count = 0
 
         async def failing_async_callback(**kwargs):
             raise ValueError("Async callback error")
 
-        @async_cache_with_deps(cache_manager=async_cache_manager, callback=failing_async_callback)
-        async def expensive_function(x):
+        @cache_with_deps(name="test", callback=failing_async_callback)
+        async def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            return x * 2
+            await asyncio.sleep(0)
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        # Function should work normally despite async callback failure
-        with caplog.at_level(logging.WARNING):
-            result1 = await expensive_function(5)
-        assert result1 == 10
+        # Should not raise error despite callback failing
+        result = await get_user(123)
+        assert result == {"id": 123, "name": "User 123"}
         assert call_count == 1
 
-        # Check that warning was logged
-        assert "Async cache callback exception occurred" in caplog.text
-        assert "Async callback error" in caplog.text
-        caplog.clear()
-
-        # Second call should still hit cache (and log warning again)
-        with caplog.at_level(logging.WARNING):
-            result2 = await expensive_function(5)
-        assert result2 == 10
-        assert call_count == 1
-
-        # Check that warning was logged again
-        assert "Async cache callback exception occurred" in caplog.text
-
-    def test_callback_with_dependencies_sync(self, cache_manager):
-        """Test callback works correctly with dependency tracking."""
+    def test_callback_with_different_arguments(self, cache_manager):
+        """Test callback receives correct arguments."""
         call_count = 0
         callback_calls = []
 
-        def test_callback(**kwargs):
+        def sync_callback(**kwargs):
             callback_calls.append(kwargs)
 
-        @cache_with_deps(
-            cache_manager=cache_manager, dependencies={"static_dep"}, callback=test_callback
-        )
-        def expensive_function(x):
+        @cache_with_deps(name="test", callback=sync_callback)
+        def get_user(user_id: int, name: str = None, active: bool = True):
             nonlocal call_count
             call_count += 1
-            add_dependency("dynamic_dep")
-            return x * 2
+            return {"id": user_id, "name": name or f"User {user_id}", "active": active}
 
-        # First call - miss
-        result1 = expensive_function(5)
-        assert result1 == 10
+        # Test with positional and keyword args
+        result = get_user(123, "Alice", active=False)
+        assert result == {"id": 123, "name": "Alice", "active": False}
         assert call_count == 1
         assert len(callback_calls) == 1
+        assert callback_calls[0]["args"] == (123, "Alice")
+        assert callback_calls[0]["kwargs"] == {"active": False}
         assert callback_calls[0]["is_hit"] is False
 
-        # Second call - hit
-        result2 = expensive_function(5)
-        assert result2 == 10
-        assert call_count == 1
-        assert len(callback_calls) == 2
-        assert callback_calls[1]["is_hit"] is True
-
-        # Invalidate dependency - should cause miss
-        cache_manager.invalidate_dependency("static_dep")
-        result3 = expensive_function(5)
-        assert result3 == 10
+        # Test with keyword args
+        result2 = get_user(456, name="Bob")
+        assert result2 == {"id": 456, "name": "Bob", "active": True}
         assert call_count == 2
-        assert len(callback_calls) == 3
-        assert callback_calls[2]["is_hit"] is False
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["args"] == (456,)
+        # Default parameters are not included in kwargs unless explicitly passed
+        assert callback_calls[1]["kwargs"] == {"name": "Bob"}
+        assert callback_calls[1]["is_hit"] is False
 
-    def test_callback_with_exception_caching_sync(self, cache_manager):
-        """Test callback behavior with exception caching."""
+    def test_callback_with_none(self, cache_manager):
+        """Test that None callback works normally."""
         call_count = 0
-        callback_calls = []
 
-        def test_callback(**kwargs):
-            callback_calls.append(kwargs)
-
-        @cache_with_deps(
-            cache_manager=cache_manager, cache_exception_types=[ValueError], callback=test_callback
-        )
-        def failing_function(x):
+        @cache_with_deps(name="test", callback=None)
+        def get_user(user_id: int):
             nonlocal call_count
             call_count += 1
-            if x < 0:
-                raise ValueError(f"Negative value: {x}")
-            return x * 2
+            return {"id": user_id, "name": f"User {user_id}"}
 
-        # First call with exception - should cache the exception
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            failing_function(-1)
+        # Should work normally without callback
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
         assert call_count == 1
-        assert len(callback_calls) == 1
-        assert callback_calls[0]["is_hit"] is False
 
-        # Second call with same exception - should hit cache
-        with pytest.raises(ValueError, match="Negative value: -1"):
-            failing_function(-1)
-        assert call_count == 1  # Should not increment
-        assert len(callback_calls) == 2
-        assert callback_calls[1]["is_hit"] is True
-        # cached_result should be the serialized exception
-        assert callback_calls[1]["cached_result"] is not None
-
-    def test_callback_parameters_sync(self, cache_manager):
-        """Test that callback receives all expected parameters."""
-        callback_calls = []
-
-        def detailed_callback(**kwargs):
-            callback_calls.append(kwargs)
-
-        @cache_with_deps(cache_manager=cache_manager, callback=detailed_callback)
-        def test_function(x, y=10):
-            return x + y
-
-        test_function(5, y=20)
-
-        assert len(callback_calls) == 1
-        callback_kwargs = callback_calls[0]
-
-        # Check all expected parameters are present
-        assert "func" in callback_kwargs
-        assert "cache_manager" in callback_kwargs
-        assert "args" in callback_kwargs
-        assert "kwargs" in callback_kwargs
-        assert "is_hit" in callback_kwargs
-        assert "cached_result" in callback_kwargs
-
-        # Function should be a callable with the same name as the original function
-        assert callable(callback_kwargs["func"])
-        assert callback_kwargs["func"].__name__ == test_function.__name__
-        assert callback_kwargs["cache_manager"] == cache_manager
-        assert callback_kwargs["args"] == (5,)
-        assert callback_kwargs["kwargs"] == {"y": 20}
-        assert callback_kwargs["is_hit"] is False
-        assert callback_kwargs["cached_result"] is None
-
-    @pytest.mark.asyncio
-    async def test_callback_parameters_async(self, async_cache_manager):
-        """Test that async callback receives all expected parameters."""
-        callback_calls = []
-
-        async def detailed_async_callback(**kwargs):
-            callback_calls.append(kwargs)
-
-        @async_cache_with_deps(cache_manager=async_cache_manager, callback=detailed_async_callback)
-        async def test_function(x, y=10):
-            return x + y
-
-        await test_function(5, y=20)
-
-        assert len(callback_calls) == 1
-        callback_kwargs = callback_calls[0]
-
-        # Check all expected parameters are present
-        assert "func" in callback_kwargs
-        assert "cache_manager" in callback_kwargs
-        assert "args" in callback_kwargs
-        assert "kwargs" in callback_kwargs
-        assert "is_hit" in callback_kwargs
-        assert "cached_result" in callback_kwargs
-
-        # Function should be a callable with the same name as the original function
-        assert callable(callback_kwargs["func"])
-        assert callback_kwargs["func"].__name__ == test_function.__name__
-        assert callback_kwargs["cache_manager"] == async_cache_manager
-        assert callback_kwargs["args"] == (5,)
-        assert callback_kwargs["kwargs"] == {"y": 20}
-        assert callback_kwargs["is_hit"] is False
-        assert callback_kwargs["cached_result"] is None
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls

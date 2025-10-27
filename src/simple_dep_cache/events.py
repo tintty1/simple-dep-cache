@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from .config import config
+from .config import ConfigBase
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,8 @@ class CacheEvent:
 class EventEmitter:
     """Simple event emitter for cache events."""
 
-    def __init__(self):
+    def __init__(self, config: ConfigBase):
+        self.config = config
         self._callbacks: dict[CacheEventType, list[Callable]] = {
             event_type: [] for event_type in CacheEventType
         }
@@ -76,7 +77,7 @@ class EventEmitter:
             try:
                 callback(event)
             except Exception as e:
-                if not config.callback_error_silent:
+                if not self.config.callback_error_silent:
                     logger.exception("Error in cache event callback: %s", e)
 
         # Call global callbacks
@@ -84,7 +85,7 @@ class EventEmitter:
             try:
                 callback(event)
             except Exception as e:
-                if not config.callback_error_silent:
+                if not self.config.callback_error_silent:
                     logger.exception("Error in cache event callback: %s", e)
 
     def clear_all(self) -> None:
