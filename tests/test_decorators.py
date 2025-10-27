@@ -32,83 +32,31 @@ def fake_async_backend():
 @pytest.fixture
 def cache_manager(fake_backend):
     """Provide a cache manager with fake backend."""
+    import simple_dep_cache.manager as manager_module
     from simple_dep_cache.config import RedisConfig
-    from simple_dep_cache.manager import CacheManager
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
 
     config = RedisConfig()
     config.prefix = "test"
-    return CacheManager(config=config, backend=fake_backend)
+    manager = get_or_create_cache_manager(backend=fake_backend, config=config)
+    return manager
 
 
 @pytest.fixture
 def async_cache_manager(fake_async_backend):
     """Provide an async cache manager with fake async backend."""
+    import simple_dep_cache.manager as manager_module
     from simple_dep_cache.config import RedisConfig
-    from simple_dep_cache.manager import CacheManager
+    from simple_dep_cache.manager import get_or_create_cache_manager
+
+    manager_module._managers = {}
 
     config = RedisConfig()
     config.prefix = "test"
-    return CacheManager(config=config, async_backend=fake_async_backend)
-
-
-@pytest.fixture
-def mock_get_manager(cache_manager):
-    """Mock get_or_create_cache_manager to use fake cache manager."""
-    from simple_dep_cache import decorators
-    from simple_dep_cache import manager as manager_module
-
-    original_get_manager = decorators.get_or_create_cache_manager
-    original_manager_get_manager = manager_module.get_or_create_cache_manager
-
-    def mock_get_manager_impl(name=None):
-        if name == "test" or name is None:
-            return cache_manager
-        # For other names, create managers with same fake backend but different configs
-        from simple_dep_cache.config import RedisConfig
-        from simple_dep_cache.manager import CacheManager
-
-        config = RedisConfig()
-        config.prefix = name
-        return CacheManager(config=config, backend=cache_manager.backend)
-
-    decorators.get_or_create_cache_manager = mock_get_manager_impl
-    manager_module.get_or_create_cache_manager = mock_get_manager_impl
-
-    yield
-
-    # Restore original function
-    decorators.get_or_create_cache_manager = original_get_manager
-    manager_module.get_or_create_cache_manager = original_manager_get_manager
-
-
-@pytest.fixture
-def mock_get_async_manager(async_cache_manager):
-    """Mock get_or_create_cache_manager to use fake async cache manager."""
-    from simple_dep_cache import decorators
-    from simple_dep_cache import manager as manager_module
-
-    original_get_manager = decorators.get_or_create_cache_manager
-    original_manager_get_manager = manager_module.get_or_create_cache_manager
-
-    def mock_get_manager_impl(name=None):
-        if name == "test" or name is None:
-            return async_cache_manager
-        # For other names, create managers with same fake backend but different configs
-        from simple_dep_cache.config import RedisConfig
-        from simple_dep_cache.manager import CacheManager
-
-        config = RedisConfig()
-        config.prefix = name
-        return CacheManager(config=config, async_backend=async_cache_manager.async_backend)
-
-    decorators.get_or_create_cache_manager = mock_get_manager_impl
-    manager_module.get_or_create_cache_manager = mock_get_manager_impl
-
-    yield
-
-    # Restore original function
-    decorators.get_or_create_cache_manager = original_get_manager
-    manager_module.get_or_create_cache_manager = original_manager_get_manager
+    manager = get_or_create_cache_manager(async_backend=fake_async_backend, config=config)
+    return manager
 
 
 class TestCacheWithDepsBasicFunctionality:
@@ -118,7 +66,7 @@ class TestCacheWithDepsBasicFunctionality:
         """Reset context before each test."""
         reset_context()
 
-    def test_sync_function_caching(self, mock_get_manager):
+    def test_sync_function_caching(self, cache_manager):
         """Test basic sync function caching."""
         call_count = 0
 
@@ -139,7 +87,7 @@ class TestCacheWithDepsBasicFunctionality:
         assert call_count == 1  # No additional calls
 
     @pytest.mark.asyncio
-    async def test_async_function_caching(self, mock_get_async_manager):
+    async def test_async_function_caching(self, async_cache_manager):
         """Test basic async function caching."""
         call_count = 0
 
@@ -160,7 +108,7 @@ class TestCacheWithDepsBasicFunctionality:
         assert result2 == {"id": 123, "name": "User 123"}
         assert call_count == 1  # No additional calls
 
-    def test_function_with_ttl(self, mock_get_manager):
+    def test_function_with_ttl(self, cache_manager):
         """Test function with TTL."""
         call_count = 0
 
@@ -179,7 +127,7 @@ class TestCacheWithDepsBasicFunctionality:
         result = get_user(123)
         assert call_count == 1
 
-    def test_function_with_dependencies(self, mock_get_manager):
+    def test_function_with_dependencies(self, cache_manager):
         """Test function with explicit dependencies."""
         call_count = 0
 
@@ -204,11 +152,12 @@ class TestCacheWithDepsBasicFunctionality:
         from simple_dep_cache.manager import get_or_create_cache_manager
 
         manager = get_or_create_cache_manager("test")
+        assert manager is not None
         manager.invalidate_dependency("user:123")
         result3 = get_user_posts(123)
         assert call_count == 2  # Should re-execute
 
-    def test_exception_caching(self, mock_get_manager):
+    def test_exception_caching(self, cache_manager):
         """Test exception caching functionality."""
         call_count = 0
 
@@ -228,7 +177,7 @@ class TestCacheWithDepsBasicFunctionality:
             failing_function()
         assert call_count == 1
 
-    def test_exception_not_cached_when_type_not_listed(self, mock_get_manager):
+    def test_exception_not_cached_when_type_not_listed(self, cache_manager):
         """Test that exceptions not in cache_exception_types are not cached."""
         call_count = 0
 
@@ -476,12 +425,15 @@ class TestMultiManagerNonNested:
 
     def setup_method(self):
         """Reset context before each test."""
+        import simple_dep_cache.manager as manager_module
+
+        manager_module._managers = {}
         reset_context()
 
     def test_non_nested_multi_manager_functions(self):
         """Test S3: Non-nested functions with different managers."""
         from simple_dep_cache.config import RedisConfig
-        from simple_dep_cache.manager import CacheManager
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
         config1 = RedisConfig()
         config1.prefix = "user_cache"
@@ -491,9 +443,11 @@ class TestMultiManagerNonNested:
         backend1 = FakeCacheBackend(config1)
         backend2 = FakeCacheBackend(config2)
 
-        manager1 = CacheManager(config=config1, backend=backend1)
-        manager2 = CacheManager(config=config2, backend=backend2)
+        manager1 = get_or_create_cache_manager(config=config1, backend=backend1)
+        manager2 = get_or_create_cache_manager(config=config2, backend=backend2)
 
+        assert manager1 is not None
+        assert manager2 is not None
         user_calls = 0
         post_calls = 0
 
@@ -546,7 +500,7 @@ class TestMultiManagerNonNested:
     async def test_non_nested_multi_manager_async(self):
         """Test S3: Non-nested async functions with different managers."""
         from simple_dep_cache.config import RedisConfig
-        from simple_dep_cache.manager import CacheManager
+        from simple_dep_cache.manager import get_or_create_cache_manager
 
         config1 = RedisConfig()
         config1.prefix = "user_cache"
@@ -556,8 +510,11 @@ class TestMultiManagerNonNested:
         async_backend1 = FakeAsyncCacheBackend(config1)
         async_backend2 = FakeAsyncCacheBackend(config2)
 
-        manager1 = CacheManager(config=config1, async_backend=async_backend1)
-        manager2 = CacheManager(config=config2, async_backend=async_backend2)
+        manager1 = get_or_create_cache_manager(config=config1, async_backend=async_backend1)
+        manager2 = get_or_create_cache_manager(config=config2, async_backend=async_backend2)
+
+        assert manager1 is not None
+        assert manager2 is not None
 
         user_calls = 0
         post_calls = 0
@@ -649,6 +606,9 @@ class TestCacheKeyGeneration:
                 self.id = id
                 self.name = name
 
+            def __str__(self) -> str:
+                return f"User<{self.id}>"
+
         @cache_with_deps(name="test")
         def get_user(user):
             nonlocal call_count
@@ -656,15 +616,18 @@ class TestCacheKeyGeneration:
             return {"id": user.id, "name": user.name}
 
         user1 = User(1, "Alice")
-        user2 = User(1, "Alice")  # Same data, different instance
+        user1_b = User(1, "Alice")  # Same data, different instance
+        user2 = User(2, "Bob")
 
         # Same logical data should use cache (based on string representation)
         get_user(user1)
         assert call_count == 1
 
-        get_user(user2)
-        assert call_count == 2  # Different instances = different cache keys
+        get_user(user1_b)
+        assert call_count == 1
 
-        # Same instance should use cache
         get_user(user1)
+        assert call_count == 1
+
+        get_user(user2)
         assert call_count == 2
