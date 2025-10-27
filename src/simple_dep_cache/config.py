@@ -31,13 +31,21 @@ def _str_to_float(value: str, default: float | None = None) -> None | float:
 class ConfigBase:
     """Base configuration settings for simple_dep_cache with dynamic property support."""
 
-    def __init__(self):
-        self._cache_enabled: bool | None = None
-        self._callback_error_silent: bool | None = None
-        self._serializer_class: str | None = None
-        self._prefix: str | None = None
-        self._cache_backend_class: str | None = None
-        self._async_cache_backend_class: str | None = None
+    def __init__(
+        self,
+        cache_enabled: bool | None = None,
+        callback_error_silent: bool | None = None,
+        serializer_class: str | None = None,
+        prefix: str | None = None,
+        cache_backend_class: str | None = None,
+        async_cache_backend_class: str | None = None,
+    ):
+        self._cache_enabled = cache_enabled
+        self._callback_error_silent = callback_error_silent
+        self._serializer_class = serializer_class
+        self._prefix = prefix
+        self._cache_backend_class = cache_backend_class
+        self._async_cache_backend_class = async_cache_backend_class
 
     @property
     def cache_enabled(self) -> bool:
@@ -159,17 +167,43 @@ class ConfigBase:
 class RedisConfig(ConfigBase):
     """Redis-specific configuration settings."""
 
-    def __init__(self):
-        super().__init__()
-        self._url: str | None = None
-        self._host: str | None = None
-        self._port: int | None = None
-        self._db: int | None = None
-        self._password: str | None = None
-        self._username: str | None = None
-        self._ssl: bool | None = None
-        self._socket_timeout: float | None = None
-        self._max_connections: int | None = None
+    def __init__(
+        self,
+        cache_enabled: bool | None = None,
+        callback_error_silent: bool | None = None,
+        serializer_class: str | None = None,
+        prefix: str | None = None,
+        cache_backend_class: str | None = None,
+        async_cache_backend_class: str | None = None,
+        url: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        db: int | None = None,
+        password: str | None = None,
+        username: str | None = None,
+        ssl: bool | None = None,
+        socket_timeout: float | None = None,
+        max_connections: int | None = None,
+        **additional_connection_kwargs,
+    ):
+        super().__init__(
+            cache_enabled=cache_enabled,
+            callback_error_silent=callback_error_silent,
+            serializer_class=serializer_class,
+            prefix=prefix,
+            cache_backend_class=cache_backend_class,
+            async_cache_backend_class=async_cache_backend_class,
+        )
+        self._url = url
+        self._host = host
+        self._port = port
+        self._db = db
+        self._password = password
+        self._username = username
+        self._ssl = ssl
+        self._socket_timeout = socket_timeout
+        self._max_connections = max_connections
+        self._additional_connection_kwargs = additional_connection_kwargs
 
     @property
     def url(self) -> str | None:
@@ -302,6 +336,20 @@ class RedisConfig(ConfigBase):
         """Set maximum connections."""
         self._max_connections = int(value)
 
+    @property
+    def additional_connection_kwargs(self) -> dict[str, Any]:
+        """Additional keyword arguments to pass to Redis client connection.
+
+        These kwargs will be merged with the standard Redis connection parameters.
+        Can be used for advanced Redis configuration options.
+        """
+        return getattr(self, "_additional_connection_kwargs", {})
+
+    @additional_connection_kwargs.setter
+    def additional_connection_kwargs(self, value: dict[str, Any]):
+        """Set additional connection kwargs."""
+        self._additional_connection_kwargs = dict(value) if value is not None else {}
+
     def reset(self) -> None:
         """Reset all Redis configuration values to defaults (environment variables)."""
         super().reset()
@@ -314,6 +362,7 @@ class RedisConfig(ConfigBase):
         self._ssl = None
         self._socket_timeout = None
         self._max_connections = None
+        self._additional_connection_kwargs = {}
 
     def to_dict(self) -> dict[str, Any]:
         """Return current Redis configuration as dictionary, merging with base config."""
@@ -328,6 +377,7 @@ class RedisConfig(ConfigBase):
             "ssl": self.ssl,
             "socket_timeout": self.socket_timeout,
             "max_connections": self.max_connections,
+            "additional_connection_kwargs": self.additional_connection_kwargs,
         }
         # Merge base config with Redis-specific config
         return {**base_config, **redis_config}

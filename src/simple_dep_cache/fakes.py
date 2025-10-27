@@ -1,11 +1,29 @@
 """Fake cache backends for testing.
 
-This module provides fake implementations of cache backends that can be used
-in tests to avoid dependencies on external services like Redis.
+This module provides fake implementations of cache backends and configuration
+that can be used in tests to avoid dependencies on external services like Redis.
 """
 
 from .backends import AsyncCacheBackend, CacheBackend
+from .config import ConfigBase
 from .types import JSONSerializer
+
+
+class FakeConfig(ConfigBase):
+    """Fake configuration for testing.
+
+    This configuration class provides sensible defaults for testing
+    without requiring any Redis-specific configuration.
+    """
+
+    def __init__(self, **kwargs):
+        cache_backend_class = "simple_dep_cache.fakes.FakeCacheBackend"
+        async_cache_backend_class = "simple_dep_cache.fakes.FakeAsyncCacheBackend"
+        super().__init__(
+            cache_backend_class=cache_backend_class,
+            async_cache_backend_class=async_cache_backend_class,
+            **kwargs,
+        )
 
 
 class FakeCacheBackend(CacheBackend):
@@ -112,4 +130,4 @@ class FakeAsyncCacheBackend(AsyncCacheBackend):
         pass
 
 
-__all__ = ["FakeCacheBackend", "FakeAsyncCacheBackend"]
+__all__ = ["FakeConfig", "FakeCacheBackend", "FakeAsyncCacheBackend"]

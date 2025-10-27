@@ -13,20 +13,18 @@ from simple_dep_cache.fakes import FakeAsyncCacheBackend, FakeCacheBackend
 @pytest.fixture
 def fake_backend():
     """Provide a fake cache backend for testing."""
-    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.fakes import FakeConfig
 
-    config = RedisConfig()
-    config.prefix = "test"
+    config = FakeConfig(prefix="test")
     return FakeCacheBackend(config)
 
 
 @pytest.fixture
 def fake_async_backend():
     """Provide a fake async cache backend for testing."""
-    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.fakes import FakeConfig
 
-    config = RedisConfig()
-    config.prefix = "test"
+    config = FakeConfig(prefix="test")
     return FakeAsyncCacheBackend(config)
 
 
@@ -34,13 +32,12 @@ def fake_async_backend():
 def cache_manager(fake_backend):
     """Provide a cache manager with fake backend."""
     import simple_dep_cache.manager as manager_module
-    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.fakes import FakeConfig
     from simple_dep_cache.manager import get_or_create_cache_manager
 
     manager_module._managers = {}
 
-    config = RedisConfig()
-    config.prefix = "test"
+    config = FakeConfig(prefix="test")
     manager = get_or_create_cache_manager(backend=fake_backend, config=config)
     return manager
 
@@ -49,12 +46,12 @@ def cache_manager(fake_backend):
 def default_cache_manager(fake_backend):
     """Provide a cache manager with fake backend."""
     import simple_dep_cache.manager as manager_module
-    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.fakes import FakeConfig
     from simple_dep_cache.manager import get_or_create_cache_manager
 
     manager_module._managers = {}
 
-    config = RedisConfig()
+    config = FakeConfig()
     manager = get_or_create_cache_manager(backend=fake_backend, config=config)
     return manager
 
@@ -63,13 +60,12 @@ def default_cache_manager(fake_backend):
 def async_cache_manager(fake_async_backend):
     """Provide an async cache manager with fake async backend."""
     import simple_dep_cache.manager as manager_module
-    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.fakes import FakeConfig
     from simple_dep_cache.manager import get_or_create_cache_manager
 
     manager_module._managers = {}
 
-    config = RedisConfig()
-    config.prefix = "test"
+    config = FakeConfig(prefix="test")
     manager = get_or_create_cache_manager(async_backend=fake_async_backend, config=config)
     return manager
 
@@ -78,12 +74,12 @@ def async_cache_manager(fake_async_backend):
 def default_async_cache_manager(fake_async_backend):
     """Provide an async cache manager with fake async backend."""
     import simple_dep_cache.manager as manager_module
-    from simple_dep_cache.config import RedisConfig
+    from simple_dep_cache.fakes import FakeConfig
     from simple_dep_cache.manager import get_or_create_cache_manager
 
     manager_module._managers = {}
 
-    config = RedisConfig()
+    config = FakeConfig()
     manager = get_or_create_cache_manager(async_backend=fake_async_backend, config=config)
     return manager
 
@@ -401,10 +397,10 @@ class TestNestedFunctionsWithDependencies:
 
     def test_nested_functions_same_manager(self):
         """Test S1: Nested functions with same manager - dependencies merge to outer."""
-        from simple_dep_cache.config import RedisConfig
+        from simple_dep_cache.fakes import FakeConfig
         from simple_dep_cache.manager import get_or_create_cache_manager
 
-        config = RedisConfig()
+        config = FakeConfig()
 
         backend = FakeCacheBackend(config)
         manager = get_or_create_cache_manager("my_manager", config=config, backend=backend)
@@ -458,13 +454,11 @@ class TestNestedFunctionsWithDependencies:
 
     def test_nested_functions_different_managers(self):
         """Test S2: Nested functions with different managers - manager isolation."""
-        from simple_dep_cache.config import RedisConfig
+        from simple_dep_cache.fakes import FakeConfig
         from simple_dep_cache.manager import get_or_create_cache_manager
 
-        config1 = RedisConfig()
-        config1.prefix = "manager1"
-        config2 = RedisConfig()
-        config2.prefix = "manager2"
+        config1 = FakeConfig(prefix="manager1")
+        config2 = FakeConfig(prefix="manager2")
 
         backend1 = FakeCacheBackend(config1)
         backend2 = FakeCacheBackend(config2)
@@ -523,13 +517,11 @@ class TestNestedFunctionsWithDependencies:
     @pytest.mark.asyncio
     async def test_nested_async_functions_same_manager(self):
         """Test async nested functions with same manager."""
-        from simple_dep_cache.config import RedisConfig
+        from simple_dep_cache.fakes import FakeConfig
         from simple_dep_cache.manager import get_or_create_cache_manager
 
-        config1 = RedisConfig()
-        config1.prefix = "manager1"
-        config2 = RedisConfig()
-        config2.prefix = "manager1"
+        config1 = FakeConfig(prefix="manager1")
+        config2 = FakeConfig(prefix="manager1")
 
         async_backend1 = FakeAsyncCacheBackend(config1)
         async_backend2 = FakeAsyncCacheBackend(config2)
@@ -593,13 +585,11 @@ class TestMultiManagerNonNested:
 
     def test_non_nested_multi_manager_functions(self):
         """Test S3: Non-nested functions with different managers."""
-        from simple_dep_cache.config import RedisConfig
+        from simple_dep_cache.fakes import FakeConfig
         from simple_dep_cache.manager import get_or_create_cache_manager
 
-        config1 = RedisConfig()
-        config1.prefix = "user_cache"
-        config2 = RedisConfig()
-        config2.prefix = "post_cache"
+        config1 = FakeConfig(prefix="user_cache")
+        config2 = FakeConfig(prefix="post_cache")
 
         backend1 = FakeCacheBackend(config1)
         backend2 = FakeCacheBackend(config2)
@@ -660,13 +650,11 @@ class TestMultiManagerNonNested:
     @pytest.mark.asyncio
     async def test_non_nested_multi_manager_async(self):
         """Test S3: Non-nested async functions with different managers."""
-        from simple_dep_cache.config import RedisConfig
+        from simple_dep_cache.fakes import FakeConfig
         from simple_dep_cache.manager import get_or_create_cache_manager
 
-        config1 = RedisConfig()
-        config1.prefix = "user_cache"
-        config2 = RedisConfig()
-        config2.prefix = "post_cache"
+        config1 = FakeConfig(prefix="user_cache")
+        config2 = FakeConfig(prefix="post_cache")
 
         async_backend1 = FakeAsyncCacheBackend(config1)
         async_backend2 = FakeAsyncCacheBackend(config2)

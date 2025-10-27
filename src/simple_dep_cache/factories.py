@@ -136,12 +136,15 @@ def create_redis_client_from_config(
     cfg = redis_config or RedisConfig()
 
     if cfg.url:
-        return redis.Redis.from_url(
-            cfg.url,
-            decode_responses=True,
-            socket_timeout=cfg.socket_timeout,
-            max_connections=cfg.max_connections,
-        )
+        # Merge additional kwargs with URL-based connection
+        url_kwargs = {
+            "decode_responses": True,
+            "socket_timeout": cfg.socket_timeout,
+            "max_connections": cfg.max_connections,
+        }
+        # Merge additional connection kwargs
+        url_kwargs.update(cfg.additional_connection_kwargs)
+        return redis.Redis.from_url(cfg.url, **url_kwargs)
 
     connection_kwargs = {
         "host": cfg.host,
@@ -160,6 +163,9 @@ def create_redis_client_from_config(
 
     if cfg.socket_timeout:
         connection_kwargs["socket_timeout"] = cfg.socket_timeout
+
+    # Merge additional connection kwargs
+    connection_kwargs.update(cfg.additional_connection_kwargs)
 
     return redis.Redis(**connection_kwargs)
 
@@ -173,12 +179,15 @@ def create_async_redis_client_from_config(
     cfg = redis_config or RedisConfig()
 
     if cfg.url:
-        return async_redis.Redis.from_url(
-            cfg.url,
-            decode_responses=True,
-            socket_timeout=cfg.socket_timeout,
-            max_connections=cfg.max_connections,
-        )
+        # Merge additional kwargs with URL-based connection
+        url_kwargs = {
+            "decode_responses": True,
+            "socket_timeout": cfg.socket_timeout,
+            "max_connections": cfg.max_connections,
+        }
+        # Merge additional connection kwargs
+        url_kwargs.update(cfg.additional_connection_kwargs)
+        return async_redis.Redis.from_url(cfg.url, **url_kwargs)
 
     connection_kwargs = {
         "host": cfg.host,
@@ -197,5 +206,8 @@ def create_async_redis_client_from_config(
 
     if cfg.socket_timeout:
         connection_kwargs["socket_timeout"] = cfg.socket_timeout
+
+    # Merge additional connection kwargs
+    connection_kwargs.update(cfg.additional_connection_kwargs)
 
     return async_redis.Redis(**connection_kwargs)
