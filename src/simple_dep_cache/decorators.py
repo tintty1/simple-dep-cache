@@ -176,7 +176,9 @@ def cache_with_deps(
 
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
-                active_cache_manager = get_or_create_cache_manager(name=name)
+                active_cache_manager = get_or_create_cache_manager(
+                    name=name, create_async_backend=True
+                )
                 # If cache manager is None (caching disabled), just execute the function
                 if active_cache_manager is None:
                     return await func(*args, **kwargs)
