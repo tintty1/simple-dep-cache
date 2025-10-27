@@ -3,6 +3,7 @@ Cache backend interfaces and implementations for different storage systems.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 
 from .config import ConfigBase
 from .types import CacheValue
@@ -28,7 +29,7 @@ class CacheBackend(ABC):
         key: str,
         value: CacheValue,
         ttl: int | None = None,
-        dependencies: set[str] | None = None,
+        dependencies: Iterable[str] | None = None,
     ) -> None:
         """Set a cache value with optional TTL and dependencies."""
         pass
@@ -84,7 +85,7 @@ class AsyncCacheBackend(ABC):
         key: str,
         value: CacheValue,
         ttl: int | None = None,
-        dependencies: set[str] | None = None,
+        dependencies: Iterable[str] | None = None,
     ) -> None:
         """Set a cache value with optional TTL and dependencies."""
         pass
