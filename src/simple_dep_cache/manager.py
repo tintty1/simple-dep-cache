@@ -15,6 +15,15 @@ _manager_lock = threading.Lock()
 _managers: dict[str, "CacheManager"] = {}
 
 
+# for backward compatability
+def get_default_cache_manager():
+    return get_or_create_cache_manager()
+
+
+def get_default_async_cache_manager():
+    return get_or_create_cache_manager(create_async_backend=True)
+
+
 def get_or_create_cache_manager(
     name: str | None = None,
     config: ConfigBase | None = None,
