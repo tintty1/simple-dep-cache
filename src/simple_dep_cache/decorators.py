@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
@@ -96,6 +97,58 @@ def _should_cache_exception(
     )
 
 
+def _validate_callback_compatibility(
+    callback: Callable | None, is_async_function: bool
+) -> Callable | None:
+    """
+    Validate callback compatibility with function type.
+
+    Returns None if callback is incompatible, otherwise returns the callback.
+    """
+    if callback is None:
+        return None
+
+    callback_is_async = asyncio.iscoroutinefunction(callback)
+
+    if is_async_function and not callback_is_async:
+        # Sync callback with async function is fine
+        return callback
+    elif not is_async_function and callback_is_async:
+        # Async callback with sync function - warn and ignore
+        import warnings
+
+        warnings.warn(
+            "Async callback provided to sync function. Callback will be ignored. "
+            "Use a sync callback with sync functions.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return None
+
+    return callback
+
+
+def _handle_callback_error(error: Exception, cache_manager: CacheManager, context: str) -> None:
+    """
+    Handle callback errors based on configuration settings.
+
+    Args:
+        error: The exception that occurred in the callback
+        cache_manager: The cache manager to get config from
+        context: Context description for logging (e.g., "cache hit", "cache miss")
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        config = cache_manager.config
+        if hasattr(config, "callback_error_silent") and not config.callback_error_silent:
+            logger.error("Callback error during %s: %s", context, error, exc_info=True)
+        # If callback_error_silent is True (default), silently ignore the error
+    except Exception:
+        # If we can't access config or there's an issue with logging, fall back to silent ignore
+        pass
+
+
 def _cache_result_or_exception_sync(
     cache_manager: CacheManager,
     cache_key: str,
@@ -157,6 +210,7 @@ def cache_with_deps(
     ttl: int | None = None,
     dependencies: set | None = None,
     cache_exception_types: list[type[Exception]] | None = None,
+    callback: Callable | None = None,
 ) -> Callable:
     """
     Decorator for caching function results with dependency tracking.
@@ -169,6 +223,9 @@ def cache_with_deps(
         dependencies: Additional dependencies to track (optional)
         cache_exception_types: List of exception types to cache.
             If None or empty, exceptions are not cached (optional)
+        callback: Callback function invoked on cache hit or miss.
+            Called with keyword arguments: func, cache_manager, args, kwargs, is_hit, cached_result
+            is_hit=True for cache hits, False for cache misses (optional)
     """
 
     def decorator(func: Callable) -> Callable:
@@ -183,12 +240,37 @@ def cache_with_deps(
                 if active_cache_manager is None:
                     return await func(*args, **kwargs)
 
+                valid_callback = _validate_callback_compatibility(callback, True)
+
                 cache_key = _generate_cache_key(func, args, kwargs)
 
                 cached_result = await active_cache_manager.aget(cache_key)
                 if cached_result is not None:
                     cache_hit_result = _handle_cache_hit(cached_result)
                     if cache_hit_result is not None:
+                        # Invoke callback for cache hit
+                        if valid_callback:
+                            try:
+                                if asyncio.iscoroutinefunction(valid_callback):
+                                    await valid_callback(
+                                        func=func,
+                                        cache_manager=active_cache_manager,
+                                        args=args,
+                                        kwargs=kwargs,
+                                        is_hit=True,
+                                        cached_result=cache_hit_result,
+                                    )
+                                else:
+                                    valid_callback(
+                                        func=func,
+                                        cache_manager=active_cache_manager,
+                                        args=args,
+                                        kwargs=kwargs,
+                                        is_hit=True,
+                                        cached_result=cache_hit_result,
+                                    )
+                            except Exception as e:
+                                _handle_callback_error(e, active_cache_manager, "cache hit")
                         return cache_hit_result
 
                 _setup_context(cache_key, active_cache_manager, ttl, dependencies)
@@ -212,6 +294,30 @@ def cache_with_deps(
                         cache_exception_types,
                     )
 
+                    # Invoke callback for cache miss
+                    if valid_callback:
+                        try:
+                            if asyncio.iscoroutinefunction(valid_callback):
+                                await valid_callback(
+                                    func=func,
+                                    cache_manager=active_cache_manager,
+                                    args=args,
+                                    kwargs=kwargs,
+                                    is_hit=False,
+                                    cached_result=None,
+                                )
+                            else:
+                                valid_callback(
+                                    func=func,
+                                    cache_manager=active_cache_manager,
+                                    args=args,
+                                    kwargs=kwargs,
+                                    is_hit=False,
+                                    cached_result=None,
+                                )
+                        except Exception as e:
+                            _handle_callback_error(e, active_cache_manager, "cache miss")
+
                     _restore_context()
 
                 if exception is not None:
@@ -228,12 +334,27 @@ def cache_with_deps(
                 if active_cache_manager is None:
                     return func(*args, **kwargs)
 
+                valid_callback = _validate_callback_compatibility(callback, False)
+
                 cache_key = _generate_cache_key(func, args, kwargs)
 
                 cached_result = active_cache_manager.get(cache_key)
                 if cached_result is not None:
                     cache_hit_result = _handle_cache_hit(cached_result)
                     if cache_hit_result is not None:
+                        # Invoke callback for cache hit
+                        if valid_callback:
+                            try:
+                                valid_callback(
+                                    func=func,
+                                    cache_manager=active_cache_manager,
+                                    args=args,
+                                    kwargs=kwargs,
+                                    is_hit=True,
+                                    cached_result=cache_hit_result,
+                                )
+                            except Exception as e:
+                                _handle_callback_error(e, active_cache_manager, "cache hit")
                         return cache_hit_result
 
                 _setup_context(cache_key, active_cache_manager, ttl, dependencies)
@@ -256,6 +377,20 @@ def cache_with_deps(
                         effective_ttl,
                         cache_exception_types,
                     )
+
+                    # Invoke callback for cache miss
+                    if valid_callback:
+                        try:
+                            valid_callback(
+                                func=func,
+                                cache_manager=active_cache_manager,
+                                args=args,
+                                kwargs=kwargs,
+                                is_hit=False,
+                                cached_result=None,
+                            )
+                        except Exception as e:
+                            _handle_callback_error(e, active_cache_manager, "cache miss")
 
                     _restore_context()
 

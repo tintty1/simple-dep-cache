@@ -55,4 +55,7 @@ testpaths = [
 python_files = [
     "test_*.py",
 ]
+markers = [
+    "redis_e2e: marks tests as Redis end-to-end tests that require a running Redis instance",
+]
 

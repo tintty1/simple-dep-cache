@@ -780,3 +780,263 @@ class TestCacheKeyGeneration:
 
         get_user(user2)
         assert call_count == 2
+
+
+class TestCallbackFunctionality:
+    """Test callback functionality in cache_with_deps decorator."""
+
+    def setup_method(self):
+        """Reset context before each test."""
+        import simple_dep_cache.manager as manager_module
+
+        manager_module._managers = {}
+        reset_context()
+
+    def test_sync_callback_with_sync_function(self, cache_manager):
+        """Test sync callback with sync function."""
+        call_count = 0
+        callback_calls = []
+
+        def sync_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(name="test", callback=sync_callback)
+        def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # First call - cache miss
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+        assert callback_calls[0]["cached_result"] is None
+        assert callback_calls[0]["args"] == (123,)
+        assert callback_calls[0]["kwargs"] == {}
+
+        # Second call - cache hit
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+        assert callback_calls[1]["cached_result"] == {"id": 123, "name": "User 123"}
+
+    def test_sync_callback_with_sync_function_error_handling_silent(self, cache_manager):
+        """Test sync callback error handling with silent config."""
+        call_count = 0
+
+        def failing_callback(**kwargs):
+            raise ValueError("Callback error")
+
+        @cache_with_deps(name="test", callback=failing_callback)
+        def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # Should not raise error despite callback failing
+        result = get_user(123)
+        assert result == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+
+    def test_sync_callback_with_sync_function_error_handling_verbose(self):
+        """Test sync callback error handling with verbose config."""
+        import simple_dep_cache.manager as manager_module
+        from simple_dep_cache.fakes import FakeCacheBackend, FakeConfig
+        from simple_dep_cache.manager import get_or_create_cache_manager
+
+        manager_module._managers = {}
+
+        config = FakeConfig(prefix="test", callback_error_silent=False)
+        backend = FakeCacheBackend(config)
+        manager = get_or_create_cache_manager(backend=backend, config=config)
+
+        call_count = 0
+
+        def failing_callback(**kwargs):
+            raise ValueError("Callback error")
+
+        @cache_with_deps(name="test", callback=failing_callback)
+        def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # Should not raise error despite callback failing
+        result = get_user(123)
+        assert result == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_callback_with_async_function(self, async_cache_manager):
+        """Test async callback with async function."""
+        call_count = 0
+        callback_calls = []
+
+        async def async_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(name="test", callback=async_callback)
+        async def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0)  # Simulate async operation
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # First call - cache miss
+        result1 = await get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+        assert callback_calls[0]["cached_result"] is None
+
+        # Second call - cache hit
+        result2 = await get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+        assert callback_calls[1]["cached_result"] == {"id": 123, "name": "User 123"}
+
+    @pytest.mark.asyncio
+    async def test_sync_callback_with_async_function(self, async_cache_manager):
+        """Test sync callback with async function."""
+        call_count = 0
+        callback_calls = []
+
+        def sync_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(name="test", callback=sync_callback)
+        async def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0)  # Simulate async operation
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # First call - cache miss
+        result1 = await get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["is_hit"] is False
+
+        # Second call - cache hit
+        result2 = await get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["is_hit"] is True
+
+    def test_async_callback_with_sync_function_warning(self, cache_manager):
+        """Test async callback with sync function generates warning."""
+        call_count = 0
+        callback_calls = []
+
+        async def async_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        # Capture warnings
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+
+            @cache_with_deps(name="test", callback=async_callback)
+            def get_user(user_id: int):
+                nonlocal call_count
+                call_count += 1
+                return {"id": user_id, "name": f"User {user_id}"}
+
+            # First call - should generate warning and not call callback
+            result1 = get_user(123)
+            assert result1 == {"id": 123, "name": "User 123"}
+            assert call_count == 1
+            assert len(callback_calls) == 0  # Callback should not be called
+
+            # Second call - still no callback
+            result2 = get_user(123)
+            assert result2 == {"id": 123, "name": "User 123"}
+            assert call_count == 1
+            assert len(callback_calls) == 0
+
+            # Check warning was generated
+            assert len(w) == 2  # One warning for each call
+            assert "Async callback provided to sync function" in str(w[0].message)
+            assert "Async callback provided to sync function" in str(w[1].message)
+
+    @pytest.mark.asyncio
+    async def test_async_callback_error_handling(self, async_cache_manager):
+        """Test async callback error handling."""
+        call_count = 0
+
+        async def failing_async_callback(**kwargs):
+            raise ValueError("Async callback error")
+
+        @cache_with_deps(name="test", callback=failing_async_callback)
+        async def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0)
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # Should not raise error despite callback failing
+        result = await get_user(123)
+        assert result == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+
+    def test_callback_with_different_arguments(self, cache_manager):
+        """Test callback receives correct arguments."""
+        call_count = 0
+        callback_calls = []
+
+        def sync_callback(**kwargs):
+            callback_calls.append(kwargs)
+
+        @cache_with_deps(name="test", callback=sync_callback)
+        def get_user(user_id: int, name: str = None, active: bool = True):
+            nonlocal call_count
+            call_count += 1
+            return {"id": user_id, "name": name or f"User {user_id}", "active": active}
+
+        # Test with positional and keyword args
+        result = get_user(123, "Alice", active=False)
+        assert result == {"id": 123, "name": "Alice", "active": False}
+        assert call_count == 1
+        assert len(callback_calls) == 1
+        assert callback_calls[0]["args"] == (123, "Alice")
+        assert callback_calls[0]["kwargs"] == {"active": False}
+        assert callback_calls[0]["is_hit"] is False
+
+        # Test with keyword args
+        result2 = get_user(456, name="Bob")
+        assert result2 == {"id": 456, "name": "Bob", "active": True}
+        assert call_count == 2
+        assert len(callback_calls) == 2
+        assert callback_calls[1]["args"] == (456,)
+        # Default parameters are not included in kwargs unless explicitly passed
+        assert callback_calls[1]["kwargs"] == {"name": "Bob"}
+        assert callback_calls[1]["is_hit"] is False
+
+    def test_callback_with_none(self, cache_manager):
+        """Test that None callback works normally."""
+        call_count = 0
+
+        @cache_with_deps(name="test", callback=None)
+        def get_user(user_id: int):
+            nonlocal call_count
+            call_count += 1
+            return {"id": user_id, "name": f"User {user_id}"}
+
+        # Should work normally without callback
+        result1 = get_user(123)
+        assert result1 == {"id": 123, "name": "User 123"}
+        assert call_count == 1
+
+        result2 = get_user(123)
+        assert result2 == {"id": 123, "name": "User 123"}
+        assert call_count == 1  # No additional calls

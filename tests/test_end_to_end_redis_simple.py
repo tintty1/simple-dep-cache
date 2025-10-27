@@ -34,6 +34,9 @@ def reset_cache_context():
     reset_context()
 
 
+pytestmark = pytest.mark.redis_e2e
+
+
 @pytest.fixture(scope="function")
 def redis_client():
     """Create Redis client and check connection."""

@@ -1,10 +1,10 @@
 # simple-dep-cache
 
-A Redis-based caching library with dependency tracking for Python applications.
+A flexible caching library with dependency tracking for Python applications.
 
 ## Overview
 
-Cache function results and automatically invalidate related caches when dependencies change. Uses Redis for distributed caching and supports both sync/async functions.
+Cache function results and automatically invalidate related caches when dependencies change. Supports multiple cache backends (including Redis) and works seamlessly with both sync and async functions.
 
 ## Installation
 
@@ -17,12 +17,27 @@ pip install simple-dep-cache
 ### Basic Usage
 
 ```python
-from simple_dep_cache import cache_with_deps, add_dependency, get_cache_manager, CacheManager
+from simple_dep_cache import cache_with_deps, add_dependency, get_cache_manager, get_or_create_cache_manager
 
 # Initialize cache manager (optional - will be created automatically if not provided)
-cache = CacheManager()
+from simple_dep_cache import create_redis_backend, RedisConfig
 
-@cache_with_deps(cache_manager=cache, ttl=300)
+redis_config = RedisConfig()
+redis_backend = create_redis_backend(redis_config)
+cache = get_or_create_cache_manager(
+    name="my_cache",
+    config=redis_config,
+    backend=redis_backend
+)
+
+# Or use the simplified factory function
+# cache = get_or_create_cache_manager()  # Uses default Redis configuration
+
+# Important: If a manager with the same name already exists in the registry,
+# the existing manager is returned and all other parameters (config, backend, etc.)
+# are ignored.
+
+@cache_with_deps(name="my_cache", ttl=300)
 def get_user_profile(user_id):
     # This function's result depends on user data
     add_dependency(f"user:{user_id}")
@@ -30,7 +45,7 @@ def get_user_profile(user_id):
     # Expensive operation (e.g., database query, API call)
     return fetch_user_from_database(user_id)
 
-@cache_with_deps(ttl=600)  # No cache_manager - will create one automatically
+@cache_with_deps(ttl=600)  # No name - will use default cache manager
 def get_user_posts(user_id):
     # This depends on both user and posts data
     add_dependency(f"user:{user_id}")
@@ -58,6 +73,48 @@ def some_function():
     current_cache.invalidate_dependency("some:dependency")
     return "result"
 ```
+
+### Nested Dependencies
+
+When cached functions call other cached functions, dependencies from inner functions are automatically collected by the outer function:
+
+```python
+@cache_with_deps(ttl=300)
+def get_user_data(user_id):
+    # This inner function adds its own dependencies
+    user_profile = get_user_profile(user_id)
+    user_settings = get_user_settings(user_id)
+
+    # The parent function automatically inherits dependencies
+    # from both get_user_profile and get_user_settings
+    return {
+        "profile": user_profile,
+        "settings": user_settings
+    }
+
+@cache_with_deps(ttl=600)
+def get_user_profile(user_id):
+    add_dependency(f"user:{user_id}")
+    add_dependency(f"profile:{user_id}")
+    return fetch_user_profile(user_id)
+
+@cache_with_deps(ttl=300)
+def get_user_settings(user_id):
+    add_dependency(f"user:{user_id}")
+    add_dependency(f"settings:{user_id}")
+    return fetch_user_settings(user_id)
+
+# When you invalidate user data, all related caches are invalidated
+cache.invalidate_dependency("user:123")
+# This invalidates: get_user_data, get_user_profile, get_user_settings for user 123
+```
+
+**Key benefits of nested dependencies:**
+
+- **Automatic collection**: Parent functions automatically inherit dependencies from child functions
+- **No manual tracking**: You don't need to manually aggregate dependencies from inner calls
+- **Granular invalidation**: Cache invalidation is precise and cascades properly through the call hierarchy
+- **Mixed sync/async**: Works seamlessly with both sync and async function calls
 
 ### Dynamic TTL Control
 
@@ -162,12 +219,14 @@ except requests.RequestException as e:
 
 ### Async Support
 
+The same `@cache_with_deps` decorator works for both synchronous and asynchronous functions:
+
 ```python
-from simple_dep_cache import async_cache_with_deps, add_dependency, AsyncCacheManager
+from simple_dep_cache import cache_with_deps, add_dependency, get_or_create_cache_manager
 
-cache = AsyncCacheManager()
+cache = get_or_create_cache_manager()  # Uses default Redis configuration
 
-@async_cache_with_deps(cache_manager=cache, ttl=300)
+@cache_with_deps(name="my_cache", ttl=300)
 async def get_user_profile_async(user_id):
     add_dependency(f"user:{user_id}")
     return await fetch_user_from_database_async(user_id)
@@ -183,7 +242,7 @@ await cache.invalidate_dependency("user:123")
 **Async exception caching:**
 
 ```python
-@async_cache_with_deps(
+@cache_with_deps(
     cache_exception_types=[aiohttp.ClientError, asyncio.TimeoutError]
 )
 async def fetch_async_data(url):
@@ -194,19 +253,99 @@ async def fetch_async_data(url):
             return await response.json()
 ```
 
-### Monitoring
+### Custom Cache Backends
+
+The library supports pluggable cache backends beyond Redis. You can implement custom backends for any storage system:
 
 ```python
-from simple_dep_cache import StatsCollector, create_logger_callback
+from simple_dep_cache import CacheBackend, AsyncCacheBackend, ConfigBase
+from simple_dep_cache.types import CacheValue
 
-cache = CacheManager()
-stats = StatsCollector()
-cache.events.on_all(stats)
-cache.events.on_all(create_logger_callback("my_cache"))
+class MemoryBackend(CacheBackend):
+    """Simple in-memory cache backend for testing or small applications."""
 
-# Check statistics
-print(stats.get_stats())  # hit_ratio, ops_per_second, etc.
+    def __init__(self, config: ConfigBase):
+        super().__init__(config)
+        self._cache = {}
+        self._dependencies = {}  # {dependency: set_of_cache_keys}
+
+    def set(self, key: str, value: CacheValue, ttl: int | None = None,
+            dependencies: Iterable[str] | None = None) -> None:
+        cache_key = self._cache_key(key)
+        self._cache[cache_key] = value
+
+        # Track dependencies
+        for dep in dependencies or []:
+            deps_key = self._deps_key(dep)
+            if deps_key not in self._dependencies:
+                self._dependencies[deps_key] = set()
+            self._dependencies[deps_key].add(cache_key)
+
+    def get(self, key: str) -> CacheValue | None:
+        return self._cache.get(self._cache_key(key))
+
+    def invalidate_dependency(self, dependency: str) -> int:
+        deps_key = self._deps_key(dependency)
+        affected_keys = self._dependencies.get(deps_key, set())
+        count = len(affected_keys)
+
+        for cache_key in affected_keys:
+            self._cache.pop(cache_key, None)
+        self._dependencies[deps_key] = set()
+        return count
+
+class AsyncMemoryBackend(AsyncCacheBackend):
+    """Async version of MemoryBackend."""
+
+    def __init__(self, config: ConfigBase):
+        super().__init__(config)
+        self._cache = {}
+        self._dependencies = {}
+
+    async def set(self, key: str, value: CacheValue, ttl: int | None = None,
+                  dependencies: Iterable[str] | None = None) -> None:
+        # Similar implementation to sync version
+        pass
+
+    async def get(self, key: str) -> CacheValue | None:
+        # Similar implementation to sync version
+        pass
+
+    async def invalidate_dependency(self, dependency: str) -> int:
+        # Similar implementation to sync version
+        pass
+
+# Usage with custom backend
+from simple_dep_cache import get_or_create_cache_manager, ConfigBase
+
+config = ConfigBase(prefix="my_cache")
+memory_backend = MemoryBackend(config)
+cache = get_or_create_cache_manager(
+    name="my_cache",
+    config=config,
+    backend=memory_backend
+)
 ```
+
+**Backend Configuration**
+
+Configure backends via environment variables:
+
+```bash
+# Custom backend classes
+DEP_CACHE_BACKEND_CLASS=myapp.backends.MyCustomBackend
+DEP_CACHE_ASYNC_BACKEND_CLASS=myapp.backends.MyAsyncBackend
+
+# Built-in Redis backend (default)
+DEP_CACHE_BACKEND_CLASS=simple_dep_cache.redis_backends.RedisCacheBackend
+```
+
+**Available built-in backends:**
+
+- `RedisCacheBackend` (default) - Redis-based caching
+- `AsyncRedisCacheBackend` (default) - Async Redis caching
+- `FakeCacheBackend` - In-memory cache for testing
+- `FakeAsyncCacheBackend` - Async in-memory cache for testing
 
 ### Custom Serializers
 
@@ -243,15 +382,106 @@ class PickleSerializer(BaseSerializer):
 - **Compatibility**: Custom serializers must be available when deserializing
 - **Performance**: JSON is fast for simple data, pickle preserves complex objects
 
+### Multiple Cache Managers
+
+You can use multiple cache managers with different backends and configurations:
+
+```python
+from simple_dep_cache import cache_with_deps, get_or_create_cache_manager
+
+# Redis-based cache for user data
+from simple_dep_cache import RedisConfig, create_redis_backend
+user_redis_config = RedisConfig(prefix="users")
+user_backend = create_redis_backend(user_redis_config)
+user_cache = get_or_create_cache_manager(
+    name="users",
+    config=user_redis_config,
+    backend=user_backend
+)
+
+# In-memory cache for frequently accessed data
+from simple_dep_cache import ConfigBase, FakeCacheBackend
+fast_cache = get_or_create_cache_manager(
+    name="fast",
+    config=ConfigBase(prefix="fast"),
+    backend=FakeCacheBackend(ConfigBase(prefix="fast"))
+)
+
+# Use specific cache managers by name
+@cache_with_deps(name="users", ttl=300)
+def get_user_profile(user_id):
+    add_dependency(f"user:{user_id}")
+    return fetch_user_from_db(user_id)
+
+@cache_with_deps(name="fast", ttl=60)  # Short TTL for frequently changing data
+def get_popular_items():
+    add_dependency("popular_items")
+    return fetch_popular_items()
+
+# Each cache manager operates independently
+user_cache.invalidate_dependency("user:123")  # Only affects user cache
+fast_cache.invalidate_dependency("popular_items")  # Only affects fast cache
+```
+
+**Cross-Manager Dependencies**
+
+The `manager` parameter in `add_dependency` allows nested functions to add dependencies to specific managers. Dependencies are only active when that manager's operation is active:
+
+```python
+@cache_with_deps(name="users")
+def get_user_profile(user_id):
+    add_dependency(f"user:{user_id}")  # Tracked by 'users' manager
+    add_dependency(f"user_data_cache:{user_id}", manager="other_manager")  # Only affects 'other_manager' when it's active
+    return fetch_user_from_db(user_id)
+
+@cache_with_deps(name="other_manager")
+def get_user_content(user_id):
+    # This calls get_user_profile, so both 'users' and 'other_manager' dependencies are active
+    profile = get_user_profile(user_id) # be careful here, see the note below
+    content = get_user_content_data(user_id)
+    return {"profile": profile, "content": content}
+
+# Now invalidating user data affects both caches
+other_cache = get_or_create_cache_manager(name="other_manager")
+other_cache.invalidate_dependency("user_data_cache:123")  # Invalidates get_user_content result
+users_cache = get_or_create_cache_manager(name="users")
+users_cache.invalidate_dependency("user:123")  # Invalidates get_user_profile result
+```
+
+**Important note**: For cross-manager dependency collection to work, `get_user_profile` must be a cache miss when called by `get_user_content`. If `get_user_profile` were a cache hit, the function wouldn't execute, so the `add_dependency(f"user_data_cache:{user_id}", manager="other_manager")` call wouldn't be triggered and the dependency wouldn't be collected.
+
+**How it works:**
+
+- `add_dependency(f"user:{user_id}")` in `get_user_profile` adds dependency to "users" manager
+- `add_dependency(f"user_data_cache{user_id}", manager="other_manager")` in `get_user_profile` adds dependency to "other_manager"
+- When `get_user_content()` (using "other_manager") calls `get_user_profile()`, both dependencies are merged into the parent operation
+- Each manager only invalidates its own dependencies, enabling coordinated cache invalidation across managers
+
+**Manager isolation and features:**
+
+- **Independent backends**: Each manager can use different storage systems
+- **Namespace separation**: Different prefixes prevent key collisions
+- **Separate configurations**: TTL, serialization, and backend settings per manager
+- **Cross-manager coordination**: Nested functions can add dependencies to parent operation's managers
+
 ## Configuration
 
 ```bash
+# Redis connection (for Redis backends)
 REDIS_URL=redis://localhost:6379/0    # Full Redis URL (preferred)
 REDIS_HOST=localhost                  # Or individual settings
 REDIS_PORT=6379
 REDIS_PASSWORD=secret
+REDIS_DB=0                            # Database number
+
+# Cache behavior
 DEP_CACHE_ENABLED=true                # Disable caching entirely
+DEP_CACHE_PREFIX=cache                # Default cache key prefix
 DEP_CACHE_SERIALIZER=simple_dep_cache.types.JSONSerializer  # Custom serializer class
+
+# Custom backends
+DEP_CACHE_BACKEND_CLASS=myapp.backends.MyCustomBackend
+DEP_CACHE_ASYNC_BACKEND_CLASS=myapp.backends.MyAsyncBackend
 ```
 
 ## Manual Cache Operations
@@ -293,29 +523,45 @@ Callback exceptions are caught and logged.
 
 **Decorators:**
 
-- `@cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types, callback)`
-- `@async_cache_with_deps(cache_manager, ttl, key_prefix, dependencies, cache_exception_types, callback)`
+- `@cache_with_deps(name, ttl, dependencies, cache_exception_types, callback)` - Works for both sync and async functions
 
 **Parameters:**
 
-- `cache_manager`: Cache manager instance (optional, auto-created if not provided)
+- `name`: Cache manager name to use (optional, uses default if not provided)
 - `ttl`: Time to live in seconds (optional)
-- `key_prefix`: Custom prefix for cache keys (optional)
 - `dependencies`: Additional static dependencies to track (optional)
 - `cache_exception_types`: List of exception types to cache (optional, no exceptions cached if None/empty)
 - `callback`: Callback function invoked on cache hit/miss (optional)
 
 **Context:**
 
-- `add_dependency(dependency)` - Track dependency in current function
+- `add_dependency(dependency, *, manager=None)` - Track dependency in current function
+  - Without `manager` param: Adds to current operation's manager
+  - With `manager` param: Adds dependency to specified manager (for cross-manager invalidation)
 - `current_cache_key()` - Get current cache key
 - `get_cache_manager()` - Get current cache manager instance
 - `set_cache_ttl(ttl)` - Set TTL for current function's cache entry
 
 **Managers:**
 
-- `CacheManager(redis_client, prefix)` - Sync Redis cache manager
-- `AsyncCacheManager(redis_client, prefix)` - Async Redis cache manager
+- `get_or_create_cache_manager(name=None, config=None, backend=None, async_backend=None)` - **Primary entry point** - Get or create from registry. If a manager with the same name exists, returns the existing manager and ignores all other parameters.
+- `CacheManager(config, name=None, backend=None, async_backend=None)` - Direct constructor (doesn't register)
+- `create_redis_backend(config)` - Create Redis backend
+- `create_async_redis_backend(config)` - Create async Redis backend
+
+**Backends:**
+
+- `CacheBackend` - Abstract base class for sync backends
+- `AsyncCacheBackend` - Abstract base class for async backends
+- `RedisCacheBackend` - Redis sync backend implementation
+- `AsyncRedisCacheBackend` - Redis async backend implementation
+- `FakeCacheBackend` - In-memory sync backend for testing
+- `FakeAsyncCacheBackend` - In-memory async backend for testing
+
+**Configuration:**
+
+- `ConfigBase` - Base configuration class
+- `RedisConfig` - Redis-specific configuration
 
 **Monitoring:**
 
