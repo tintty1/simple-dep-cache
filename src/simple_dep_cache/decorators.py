@@ -149,6 +149,32 @@ def _handle_callback_error(error: Exception, cache_manager: CacheManager, contex
         pass
 
 
+def _handle_backend_error(operation: str, func_name: str, error: Exception, silent: bool) -> None:
+    """Handle backend errors by logging or re-raising based on silent flag."""
+    if not silent:
+        raise
+    logger = logging.getLogger(__name__)
+    logger.warning("Backend error during %s for %s: %s", operation, func_name, error, exc_info=True)
+
+
+def _safe_backend_op(op: Callable, silent: bool, func_name: str, operation: str) -> Any:
+    """Execute a backend operation with optional error silencing."""
+    try:
+        return op()
+    except Exception as e:
+        _handle_backend_error(operation, func_name, e, silent)
+        return None
+
+
+async def _safe_backend_op_async(op: Callable, silent: bool, func_name: str, operation: str) -> Any:
+    """Execute an async backend operation with optional error silencing."""
+    try:
+        return await op()
+    except Exception as e:
+        _handle_backend_error(operation, func_name, e, silent)
+        return None
+
+
 def _cache_result_or_exception_sync(
     cache_manager: CacheManager,
     cache_key: str,
@@ -211,6 +237,7 @@ def cache_with_deps(
     dependencies: set | None = None,
     cache_exception_types: list[type[Exception]] | None = None,
     callback: Callable | None = None,
+    silent_backend_errors: bool = False,
 ) -> Callable:
     """
     Decorator for caching function results with dependency tracking.
@@ -226,6 +253,9 @@ def cache_with_deps(
         callback: Callback function invoked on cache hit or miss.
             Called with keyword arguments: func, cache_manager, args, kwargs, is_hit, cached_result
             is_hit=True for cache hits, False for cache misses (optional)
+        silent_backend_errors: If True, silently log backend errors (e.g., Redis connection errors)
+            instead of raising them. The decorated function will execute normally when backend
+            errors occur. Defaults to False (optional)
     """
 
     def decorator(func: Callable) -> Callable:
@@ -244,7 +274,14 @@ def cache_with_deps(
 
                 cache_key = _generate_cache_key(func, args, kwargs)
 
-                cached_result = await active_cache_manager.aget(cache_key)
+                # Try to get from cache with optional error silencing
+                cached_result = await _safe_backend_op_async(
+                    lambda: active_cache_manager.aget(cache_key),
+                    silent_backend_errors,
+                    func.__qualname__,
+                    "cache get",
+                )
+
                 if cached_result is not None:
                     cache_hit_result = _handle_cache_hit(cached_result)
                     if cache_hit_result is not None:
@@ -284,14 +321,21 @@ def cache_with_deps(
                 finally:
                     current_deps = get_current_dependencies()
                     effective_ttl = get_cache_ttl()
-                    await _cache_result_or_exception_async(
-                        active_cache_manager,
-                        cache_key,
-                        result,
-                        exception,
-                        current_deps,
-                        effective_ttl,
-                        cache_exception_types,
+
+                    # Try to set cache with optional error silencing
+                    await _safe_backend_op_async(
+                        lambda: _cache_result_or_exception_async(
+                            active_cache_manager,
+                            cache_key,
+                            result,
+                            exception,
+                            current_deps,
+                            effective_ttl,
+                            cache_exception_types,
+                        ),
+                        silent_backend_errors,
+                        func.__qualname__,
+                        "cache set",
                     )
 
                     # Invoke callback for cache miss
@@ -338,7 +382,14 @@ def cache_with_deps(
 
                 cache_key = _generate_cache_key(func, args, kwargs)
 
-                cached_result = active_cache_manager.get(cache_key)
+                # Try to get from cache with optional error silencing
+                cached_result = _safe_backend_op(
+                    lambda: active_cache_manager.get(cache_key),
+                    silent_backend_errors,
+                    func.__qualname__,
+                    "cache get",
+                )
+
                 if cached_result is not None:
                     cache_hit_result = _handle_cache_hit(cached_result)
                     if cache_hit_result is not None:
@@ -368,14 +419,21 @@ def cache_with_deps(
                 finally:
                     current_deps = get_current_dependencies()
                     effective_ttl = get_cache_ttl()
-                    _cache_result_or_exception_sync(
-                        active_cache_manager,
-                        cache_key,
-                        result,
-                        exception,
-                        current_deps,
-                        effective_ttl,
-                        cache_exception_types,
+
+                    # Try to set cache with optional error silencing
+                    _safe_backend_op(
+                        lambda: _cache_result_or_exception_sync(
+                            active_cache_manager,
+                            cache_key,
+                            result,
+                            exception,
+                            current_deps,
+                            effective_ttl,
+                            cache_exception_types,
+                        ),
+                        silent_backend_errors,
+                        func.__qualname__,
+                        "cache set",
                     )
 
                     # Invoke callback for cache miss
