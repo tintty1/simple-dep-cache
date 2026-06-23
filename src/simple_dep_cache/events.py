@@ -1,8 +1,9 @@
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from inspect import iscoroutinefunction
 from typing import Any
 
 from .config import ConfigBase
@@ -38,6 +39,9 @@ class CacheEvent:
             self.timestamp = time.time()
 
 
+CacheCallback = Callable[[CacheEvent], Any]
+
+
 class EventEmitter:
     """Simple event emitter for cache events."""
 
@@ -48,45 +52,67 @@ class EventEmitter:
         }
         self._global_callbacks: list[Callable] = []
 
-    def on(self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]) -> None:
+    def on(self, event_type: CacheEventType, callback: CacheCallback) -> None:
         """Register a callback for a specific event type."""
         self._callbacks[event_type].append(callback)
 
-    def on_all(self, callback: Callable[[CacheEvent], None]) -> None:
+    def on_all(self, callback: CacheCallback) -> None:
         """Register a callback for all event types."""
         self._global_callbacks.append(callback)
 
-    def off(self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]) -> bool:
+    def off(self, event_type: CacheEventType, callback: CacheCallback) -> bool:
         """Unregister a callback for a specific event type."""
         if callback in self._callbacks[event_type]:
             self._callbacks[event_type].remove(callback)
             return True
         return False
 
-    def off_all(self, callback: Callable[[CacheEvent], None]) -> bool:
+    def off_all(self, callback: CacheCallback) -> bool:
         """Unregister a callback from all events."""
         if callback in self._global_callbacks:
             self._global_callbacks.remove(callback)
             return True
         return False
 
-    def emit(self, event: CacheEvent) -> None:
-        """Emit an event to all registered callbacks."""
-        # Call specific event callbacks
-        for callback in self._callbacks[event.event_type]:
-            try:
-                callback(event)
-            except Exception as e:
-                if not self.config.callback_error_silent:
-                    logger.exception("Error in cache event callback: %s", e)
+    def _iter_callbacks(self, event_type: CacheEventType) -> Iterator[Callable]:
+        """Yield specific-then-global callbacks for an event type."""
+        yield from self._callbacks[event_type]
+        yield from self._global_callbacks
 
-        # Call global callbacks
-        for callback in self._global_callbacks:
+    def has_async_callbacks(self, event_type: CacheEventType) -> bool:
+        """True if any registered callback for this event type is a coroutine function."""
+        return any(iscoroutinefunction(cb) for cb in self._iter_callbacks(event_type))
+
+    def _handle_callback_error(self, error: Exception) -> None:
+        if not self.config.callback_error_silent:
+            logger.exception("Error in cache event callback: %s", error)
+
+    def emit(self, event: CacheEvent) -> None:
+        """Dispatch the event to all *sync* callbacks.
+
+        Async callbacks are skipped here; they are dispatched by :meth:`aemit`
+        from the manager's async methods.
+        """
+        for callback in self._iter_callbacks(event.event_type):
+            if iscoroutinefunction(callback):
+                continue
             try:
                 callback(event)
             except Exception as e:
-                if not self.config.callback_error_silent:
-                    logger.exception("Error in cache event callback: %s", e)
+                self._handle_callback_error(e)
+
+    async def aemit(self, event: CacheEvent) -> None:
+        """Dispatch the event to all *async* callbacks, awaiting each.
+
+        Sync callbacks are skipped here; they are dispatched by :meth:`emit`.
+        """
+        for callback in self._iter_callbacks(event.event_type):
+            if not iscoroutinefunction(callback):
+                continue
+            try:
+                await callback(event)
+            except Exception as e:
+                self._handle_callback_error(e)
 
     def clear_all(self) -> None:
         """Clear all callbacks."""
@@ -148,7 +174,7 @@ class StatsCollector:
         self.start_time = time.time()
 
 
-def create_logger_callback(name: str = "cache") -> Callable[[CacheEvent], None]:
+def create_logger_callback(name: str = "cache") -> CacheCallback:
     """Create a callback that logs cache events."""
 
     def logger_callback(event: CacheEvent) -> None:

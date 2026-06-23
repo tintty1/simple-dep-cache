@@ -2,12 +2,11 @@ import builtins
 import threading
 import time
 import warnings
-from collections.abc import Callable
 from typing import Optional
 
 from .backends import AsyncCacheBackend, CacheBackend
 from .config import ConfigBase, RedisConfig
-from .events import CacheEvent, CacheEventType, EventEmitter
+from .events import CacheCallback, CacheEvent, CacheEventType, EventEmitter
 from .types import CacheValue
 
 _manager_lock = threading.Lock()
@@ -115,6 +114,26 @@ class CacheManager:
         else:
             raise RuntimeError("No backend available.")
 
+    def _emit(self, event: CacheEvent) -> None:
+        """Dispatch an event from a synchronous operation.
+
+        Sync operations can't await, so an async callback registered for this
+        event has no way to run -- that's a misconfiguration, so we raise rather
+        than silently drop it. Use the async (a*) methods for async callbacks.
+        """
+        if self.events.has_async_callbacks(event.event_type):
+            raise RuntimeError(
+                f"An async callback is registered for {event.event_type}, but it was "
+                f"triggered by a synchronous cache operation and cannot be awaited. "
+                f"Use the async ('a'-prefixed) methods, or register a sync callback."
+            )
+        self.events.emit(event)
+
+    async def _aemit(self, event: CacheEvent) -> None:
+        """Dispatch an event from an asynchronous operation (sync + async callbacks)."""
+        self.events.emit(event)
+        await self.events.aemit(event)
+
     def set(
         self,
         key: str,
@@ -128,7 +147,7 @@ class CacheManager:
 
         self.backend.set(key, value, ttl, dependencies)
 
-        self.events.emit(
+        self._emit(
             CacheEvent(
                 event_type=CacheEventType.SET,
                 key=key,
@@ -160,7 +179,7 @@ class CacheManager:
         else:
             raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
-        self.events.emit(
+        await self._aemit(
             CacheEvent(
                 event_type=CacheEventType.SET,
                 key=key,
@@ -179,12 +198,10 @@ class CacheManager:
         value = self.backend.get(key)
 
         if value is None:
-            self.events.emit(
-                CacheEvent(event_type=CacheEventType.MISS, key=key, timestamp=time.time())
-            )
+            self._emit(CacheEvent(event_type=CacheEventType.MISS, key=key, timestamp=time.time()))
             return None
 
-        self.events.emit(
+        self._emit(
             CacheEvent(
                 event_type=CacheEventType.HIT,
                 key=key,
@@ -210,12 +227,12 @@ class CacheManager:
             raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
         if value is None:
-            self.events.emit(
+            await self._aemit(
                 CacheEvent(event_type=CacheEventType.MISS, key=key, timestamp=time.time())
             )
             return None
 
-        self.events.emit(
+        await self._aemit(
             CacheEvent(
                 event_type=CacheEventType.HIT,
                 key=key,
@@ -233,7 +250,7 @@ class CacheManager:
         count = self.backend.delete(*keys)
 
         for key in keys:
-            self.events.emit(
+            self._emit(
                 CacheEvent(
                     event_type=CacheEventType.DELETE,
                     key=key,
@@ -260,7 +277,7 @@ class CacheManager:
             raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
         for key in keys:
-            self.events.emit(
+            await self._aemit(
                 CacheEvent(
                     event_type=CacheEventType.DELETE,
                     key=key,
@@ -278,7 +295,7 @@ class CacheManager:
 
         count = self.backend.clear(pattern)
 
-        self.events.emit(
+        self._emit(
             CacheEvent(
                 event_type=CacheEventType.CLEAR,
                 key=pattern,
@@ -304,7 +321,7 @@ class CacheManager:
         else:
             raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
-        self.events.emit(
+        await self._aemit(
             CacheEvent(
                 event_type=CacheEventType.CLEAR,
                 key=pattern,
@@ -325,7 +342,7 @@ class CacheManager:
         count = self.backend.invalidate_dependency(dependency)
 
         # Emit invalidate event
-        self.events.emit(
+        self._emit(
             CacheEvent(
                 event_type=CacheEventType.INVALIDATE,
                 key=dependency,
@@ -352,7 +369,7 @@ class CacheManager:
         else:
             raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
-        self.events.emit(
+        await self._aemit(
             CacheEvent(
                 event_type=CacheEventType.INVALIDATE,
                 key=dependency,
@@ -407,7 +424,7 @@ class CacheManager:
         else:
             raise RuntimeError("No backend available. Provide either 'backend' or 'async_backend'.")
 
-    def on_event(self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]) -> None:
+    def on_event(self, event_type: CacheEventType, callback: CacheCallback) -> None:
         """Register a callback for a specific cache event type.
 
         Args:
@@ -416,7 +433,7 @@ class CacheManager:
         """
         self.events.on(event_type, callback)
 
-    def on_all_events(self, callback: Callable[[CacheEvent], None]) -> None:
+    def on_all_events(self, callback: CacheCallback) -> None:
         """Register a callback for all cache events.
 
         Args:
@@ -424,9 +441,7 @@ class CacheManager:
         """
         self.events.on_all(callback)
 
-    def remove_event_callback(
-        self, event_type: CacheEventType, callback: Callable[[CacheEvent], None]
-    ) -> bool:
+    def remove_event_callback(self, event_type: CacheEventType, callback: CacheCallback) -> bool:
         """Remove a callback for a specific event type.
 
         Args:
@@ -438,7 +453,7 @@ class CacheManager:
         """
         return self.events.off(event_type, callback)
 
-    def remove_all_events_callback(self, callback: Callable[[CacheEvent], None]) -> bool:
+    def remove_all_events_callback(self, callback: CacheCallback) -> bool:
         """Remove a callback from all events.
 
         Args:
