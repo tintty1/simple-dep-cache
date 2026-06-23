@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import json
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .config import ConfigBase
 from .utils import DynamicImporter
 
 if TYPE_CHECKING:
+    from typing import Self
+
     import orjson
 
 try:

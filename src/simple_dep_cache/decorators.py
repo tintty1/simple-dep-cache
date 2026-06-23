@@ -1,5 +1,5 @@
-import asyncio
 import hashlib
+import inspect
 import logging
 from collections.abc import Callable
 from functools import wraps
@@ -108,7 +108,7 @@ def _validate_callback_compatibility(
     if callback is None:
         return None
 
-    callback_is_async = asyncio.iscoroutinefunction(callback)
+    callback_is_async = inspect.iscoroutinefunction(callback)
 
     if is_async_function and not callback_is_async:
         # Sync callback with async function is fine
@@ -259,7 +259,7 @@ def cache_with_deps(
     """
 
     def decorator(func: Callable) -> Callable:
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
 
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
@@ -288,7 +288,7 @@ def cache_with_deps(
                         # Invoke callback for cache hit
                         if valid_callback:
                             try:
-                                if asyncio.iscoroutinefunction(valid_callback):
+                                if inspect.iscoroutinefunction(valid_callback):
                                     await valid_callback(
                                         func=func,
                                         cache_manager=active_cache_manager,
@@ -341,7 +341,7 @@ def cache_with_deps(
                     # Invoke callback for cache miss
                     if valid_callback:
                         try:
-                            if asyncio.iscoroutinefunction(valid_callback):
+                            if inspect.iscoroutinefunction(valid_callback):
                                 await valid_callback(
                                     func=func,
                                     cache_manager=active_cache_manager,
