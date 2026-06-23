@@ -521,6 +521,36 @@ async def async_function(x):
 
 Callback exceptions are caught and logged.
 
+#### Event callbacks (sync & async)
+
+Beyond the decorator `callback`, you can subscribe to manager-level events
+(`SET`, `HIT`, `MISS`, `DELETE`, `INVALIDATE`, `CLEAR`). Callbacks may be sync
+**or** async:
+
+```python
+from simple_dep_cache import CacheEventType, get_or_create_cache_manager
+
+cache = get_or_create_cache_manager()
+
+def on_invalidate(event):                 # sync callback
+    log.info("invalidated %s (%s entries)", event.key, event.count)
+
+async def on_invalidate_async(event):     # async callback
+    await bus.publish("cache.invalidate", {"key": event.key})
+
+cache.on_event(CacheEventType.INVALIDATE, on_invalidate)
+cache.on_event(CacheEventType.INVALIDATE, on_invalidate_async)
+```
+
+- Async callbacks are awaited by the **async** cache methods (`aset`, `aget`,
+  `adelete`, `aclear`, `ainvalidate_dependency`) via `EventEmitter.aemit()`.
+- The **sync** methods only dispatch sync callbacks. If an async callback is
+  registered for an event a sync method emits, that method raises
+  `RuntimeError` (a sync context can't await it) — use the async method, or a
+  sync callback.
+- A single sync callback also runs from the async methods, so it's the simplest
+  choice when you don't need to `await` inside the callback.
+
 **Decorators:**
 
 - `@cache_with_deps(name, ttl, dependencies, cache_exception_types, callback)` - Works for both sync and async functions

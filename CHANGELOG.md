@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.3.0 - 2026-06-23
+
+### Added
+
+- **Async event callbacks**: event callbacks registered via `on_event` /
+  `on_all_events` may now be coroutine functions. The async cache methods
+  (`aset`, `aget`, `adelete`, `aclear`, `ainvalidate_dependency`) dispatch to
+  both sync and async callbacks, awaiting the async ones.
+  - New `EventEmitter.aemit()` awaits async callbacks; `emit()` runs only sync
+    callbacks (it never leaves a coroutine un-awaited).
+  - New `EventEmitter.has_async_callbacks(event_type)`.
+  - Callback type hints widened to `CacheCallback = Callable[[CacheEvent], Any]`.
+
+### Changed
+
+- A **synchronous** cache operation (`set`/`get`/`delete`/`clear`/
+  `invalidate_dependency`) now raises `RuntimeError` if an async callback is
+  registered for the emitted event, instead of silently dropping it. Use the
+  async (`a`-prefixed) methods to dispatch async callbacks. Sync callbacks are
+  unaffected.
+
 ## v0.1.3 - 2025-09-19
 
 ### Added
